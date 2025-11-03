@@ -1,0 +1,31 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+.env
+
+# UV
+uv.lock
+
+# Visual Studio Code
+.vscode/
+
+# Ruff stuff:
+.ruff_cache/
+
+# mypy
+.mypy_cache/
+
+# Misc
+*.csv
+nuclear_segmentation_data/
+nuclear_geosparql_output/
+geojson_files/
+geosparql_output/
+.claude/
