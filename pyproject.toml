@@ -1,0 +1,8 @@
+[project]
+name = "geosparql-etl"
+version = "0.1.0"
+description = "Convert geospatial and scientific data into GeoSPARQL-compliant RDF"
+readme = "README.md"
+requires-python = ">=3.13"
+# No external dependencies required
+dependencies = []
