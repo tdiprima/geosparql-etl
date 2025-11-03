@@ -1,13 +1,13 @@
 # GeoSPARQL ETL 🧠
 
-Note to self: this repo’s just a pair of quick ETL scripts I hacked together to convert geospatial + pathology data into [GeoSPARQL](https://www.ogc.org/standards/geosparql) RDF triples.  
+Note to self: this repo's just a pair of quick ETL scripts I hacked together to convert geospatial + pathology data into [GeoSPARQL](https://www.ogc.org/standards/geosparql) RDF triples.  
 Basically: turn messy data → semantic linked data.
 
 ## 🚀 Overview / Reminder
 
 ### `geojson_to_geosparql_etl.py`
 Takes **GeoJSON** feature collections and spits out **GeoSPARQL TTL** files.  
-uses SNOMED CT URIs for the tissue class mappings.
+Uses SNOMED CT URIs for the tissue class mappings.
 
 **Does this:**
 
@@ -16,6 +16,8 @@ uses SNOMED CT URIs for the tissue class mappings.
 - Turns polygons → WKT
 - Builds RDF triples w/ GeoSPARQL + PROV metadata
 - Writes `.ttl` files into `./geosparql_output`
+
+`wsinfer` output to Halcyon input.
 
 ### `nuclear_segmentation_etl.py`
 Handles **nuclear segmentation CSVs** (from digital pathology workflows).  
@@ -26,8 +28,10 @@ Same idea — ends up with GeoSPARQL TTL, just different input.
 - Goes through subdirs of SVS images
 - Geads patch-level CSVs (`*-features.csv`)
 - Extracts polygons + patch metadata
-- Maps everything to SNOMED “nuclear material”
+- Maps everything to SNOMED "nuclear material"
 - Can gzip compress the output TTLs
+
+`quip_cnn_segmentation` "polygons" output to Halcyon input.
 
 ## ⚙️ Running these later
 
