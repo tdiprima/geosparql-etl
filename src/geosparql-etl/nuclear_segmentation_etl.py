@@ -259,15 +259,15 @@ def process_image_directories(input_base_dir, output_dir, compress=False):
 
     Directory structure:
         input_base_dir/
-            *.svs.tar.gz/
-                *_polygon/
-                    *.svs/
-                        X_Y_WIDTH_HEIGHT_INFO-features.csv
-                        X_Y_WIDTH_HEIGHT_INFO-features.csv
-                        ...
+            blca_polygon/                          # Cancer type folder
+                TCGA-*.svs.tar.gz/                 # Slide tar.gz folder
+                    blca_polygon/                  # Inner polygon folder
+                        TCGA-*.svs/                # SVS folder
+                            X_Y_WIDTH_HEIGHT_INFO-features.csv
+                            ...
 
     Args:
-        input_base_dir: Base directory containing SVS tar.gz subdirectories
+        input_base_dir: Base directory containing cancer type folders (*_polygon)
         output_dir: Directory for output TTL files
         compress: If True, gzip compress the output files
     """
@@ -277,87 +277,126 @@ def process_image_directories(input_base_dir, output_dir, compress=False):
     # Create output directory if it doesn't exist
     output_path.mkdir(parents=True, exist_ok=True)
 
-    # Find all *_polygon directories within the nested structure
-    polygon_dirs = list(input_path.glob("*.svs.tar.gz/*_polygon"))
+    # Find all top-level cancer type folders (*_polygon)
+    cancer_type_dirs = [
+        d for d in input_path.iterdir() if d.is_dir() and d.name.endswith("_polygon")
+    ]
 
-    if not polygon_dirs:
+    if not cancer_type_dirs:
         print(f"No *_polygon directories found in {input_base_dir}")
         return
 
-    print(f"Found {len(polygon_dirs)} polygon directories to process")
+    print(f"Found {len(cancer_type_dirs)} cancer type directories to process")
 
     total_success = 0
     total_error = 0
 
-    for polygon_dir in polygon_dirs:
-        # Extract cancer type and prefix from polygon directory (e.g., "blca" from "blca_polygon")
-        polygon_name = polygon_dir.name
-        cancer_type = polygon_name.replace("_polygon", "") if polygon_name.endswith("_polygon") else None
-        prefix = cancer_type + "_" if cancer_type else ""
+    for cancer_type_dir in cancer_type_dirs:
+        # Extract cancer type from directory name (e.g., "blca" from "blca_polygon")
+        cancer_type_name = cancer_type_dir.name
+        cancer_type = cancer_type_name.replace("_polygon", "")
+        prefix = cancer_type + "_"
 
-        print(f"\nProcessing polygon directory: {polygon_name} (cancer type: {cancer_type or 'unknown'})")
+        print(f"\nProcessing cancer type: {cancer_type_name} (type: {cancer_type})")
 
-        # Find all *.svs subdirectories within the polygon directory
-        svs_dirs = [d for d in polygon_dir.iterdir() if d.is_dir() and d.name.endswith(".svs")]
+        # Find all *.svs.tar.gz subdirectories within the cancer type folder
+        tar_gz_dirs = [
+            d
+            for d in cancer_type_dir.iterdir()
+            if d.is_dir() and d.name.endswith(".svs.tar.gz")
+        ]
 
-        if not svs_dirs:
-            print(f"  ⚠ No .svs directories found in {polygon_name}")
+        if not tar_gz_dirs:
+            print(f"  ⚠ No .svs.tar.gz directories found in {cancer_type_name}")
             continue
 
-        for svs_dir in svs_dirs:
-            image_name = svs_dir.name
-            print(f"  Processing image: {image_name}")
+        print(f"  Found {len(tar_gz_dirs)} slide directories")
 
-            # Get all CSV files in this SVS directory
-            csv_files = list(svs_dir.glob("*-features.csv"))
+        for tar_gz_dir in tar_gz_dirs:
+            # Find the inner *_polygon directory
+            inner_polygon_dirs = [
+                d
+                for d in tar_gz_dir.iterdir()
+                if d.is_dir() and d.name.endswith("_polygon")
+            ]
 
-            if not csv_files:
-                print(f"    ⚠ No CSV files found in {image_name}")
+            if not inner_polygon_dirs:
+                print(f"    ⚠ No inner polygon directory found in {tar_gz_dir.name}")
                 continue
 
-            print(f"    Found {len(csv_files)} patch CSV files")
+            # Process each inner polygon directory (should typically be just one)
+            for inner_polygon_dir in inner_polygon_dirs:
+                # Find all *.svs subdirectories
+                svs_dirs = [
+                    d
+                    for d in inner_polygon_dir.iterdir()
+                    if d.is_dir() and d.name.endswith(".svs")
+                ]
 
-            # Generate image hash once for all patches
-            image_hash = get_image_hash(image_id=image_name)
+                if not svs_dirs:
+                    print(
+                        f"    ⚠ No .svs directories found in {inner_polygon_dir.name}"
+                    )
+                    continue
 
-            success_count = 0
-            error_count = 0
+                for svs_dir in svs_dirs:
+                    image_name = svs_dir.name
+                    print(f"  Processing image: {image_name}")
 
-            for csv_file in csv_files:
-                try:
-                    # Convert to GeoSPARQL with cancer type
-                    ttl_content = create_geosparql_ttl(csv_file, image_name, image_hash, cancer_type)
+                    # Get all CSV files in this SVS directory
+                    csv_files = list(svs_dir.glob("*-features.csv"))
 
-                    # Write output file - use image_name as subdirectory
-                    image_output_dir = output_path / image_name
-                    image_output_dir.mkdir(parents=True, exist_ok=True)
+                    if not csv_files:
+                        print(f"    ⚠ No CSV files found in {image_name}")
+                        continue
 
-                    # Add prefix to output filename
-                    output_filename = prefix + csv_file.stem + ".ttl"
-                    if compress:
-                        output_filename += ".gz"
+                    print(f"    Found {len(csv_files)} patch CSV files")
 
-                    output_file = image_output_dir / output_filename
+                    # Generate image hash once for all patches
+                    image_hash = get_image_hash(image_id=image_name)
 
-                    if compress:
-                        with gzip.open(output_file, "wt", encoding="utf-8") as f:
-                            f.write(ttl_content)
-                    else:
-                        with open(output_file, "w", encoding="utf-8") as f:
-                            f.write(ttl_content)
+                    success_count = 0
+                    error_count = 0
 
-                    success_count += 1
+                    for csv_file in csv_files:
+                        try:
+                            # Convert to GeoSPARQL with cancer type
+                            ttl_content = create_geosparql_ttl(
+                                csv_file, image_name, image_hash, cancer_type
+                            )
 
-                except Exception as e:
-                    print(f"      ✗ Error processing {csv_file.name}: {e}")
-                    error_count += 1
+                            # Write output file - use image_name as subdirectory
+                            image_output_dir = output_path / image_name
+                            image_output_dir.mkdir(parents=True, exist_ok=True)
 
-            print(f"    ✓ Processed {success_count} patches successfully")
-            if error_count > 0:
-                print(f"    ✗ {error_count} errors")
+                            # Add prefix to output filename
+                            output_filename = prefix + csv_file.stem + ".ttl"
+                            if compress:
+                                output_filename += ".gz"
 
-            total_success += success_count
-            total_error += error_count
+                            output_file = image_output_dir / output_filename
+
+                            if compress:
+                                with gzip.open(
+                                    output_file, "wt", encoding="utf-8"
+                                ) as f:
+                                    f.write(ttl_content)
+                            else:
+                                with open(output_file, "w", encoding="utf-8") as f:
+                                    f.write(ttl_content)
+
+                            success_count += 1
+
+                        except Exception as e:
+                            print(f"      ✗ Error processing {csv_file.name}: {e}")
+                            error_count += 1
+
+                    print(f"    ✓ Processed {success_count} patches successfully")
+                    if error_count > 0:
+                        print(f"    ✗ {error_count} errors")
+
+                    total_success += success_count
+                    total_error += error_count
 
     print("\n" + "=" * 60)
     print("Processing complete!")
@@ -369,7 +408,7 @@ def main():
     """Main entry point for the ETL script."""
 
     # Configuration
-    INPUT_BASE_DIR = "./nuclear_segmentation_data/cvpr-data"  # Base dir with *.svs.tar.gz subdirectories
+    INPUT_BASE_DIR = "/data3/tammy/nuclear_segmentation_data/cvpr-data"  # Base dir with cancer type folders (*_polygon)
     OUTPUT_DIR = "./nuclear_geosparql_output"  # Directory for output TTL files
     COMPRESS_OUTPUT = True  # Set to True to gzip compress output files
 
