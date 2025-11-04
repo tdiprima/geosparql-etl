@@ -127,7 +127,7 @@ def get_image_hash(image_path=None, image_id=None):
     return hashlib.sha256(b"unknown").hexdigest()
 
 
-def create_geosparql_ttl(csv_path, image_name, image_hash=None):
+def create_geosparql_ttl(csv_path, image_name, image_hash=None, cancer_type=None):
     """
     Convert nuclear segmentation CSV to GeoSPARQL TTL format.
 
@@ -135,6 +135,7 @@ def create_geosparql_ttl(csv_path, image_name, image_hash=None):
         csv_path: Path to CSV file (contains patch data)
         image_name: Name of the parent SVS image (from directory name)
         image_hash: SHA-256 hash of image (optional, generated from image_name if not provided)
+        cancer_type: Cancer type identifier (e.g., "blca") extracted from polygon directory
 
     Returns:
         Turtle/RDF content as string
@@ -175,13 +176,21 @@ def create_geosparql_ttl(csv_path, image_name, image_hash=None):
     # Include patch dimensions in description
     patch_desc = f"patch {patch_info['x']}_{patch_info['y']} ({patch_info['width']}x{patch_info['height']})"
 
+    # Build the feature collection with optional cancer type
     ttl_content += f"""<>      a                    geo:FeatureCollection;
         dc:creator           "http://orcid.org/0000-0003-4165-4062";
         dc:date              "{timestamp}"^^xsd:dateTime;
         dc:description       "Nuclear segmentation predictions for {image_name} - {patch_desc}";
         dc:publisher         <https://ror.org/01882y777> , <https://ror.org/05qghxh33>;
         dc:references        "https://doi.org/10.1038/s41597-020-0528-1";
-        dc:title             "nuclear-segmentation-predictions";
+        dc:title             "nuclear-segmentation-predictions";"""
+
+    # Add cancer type if provided
+    if cancer_type:
+        ttl_content += f"""
+        hal:cancerType       "{cancer_type}";"""
+
+    ttl_content += f"""
         hal:patchX           "{patch_info['x']}"^^xsd:int;
         hal:patchY           "{patch_info['y']}"^^xsd:int;
         hal:patchWidth       "{patch_info['width']}"^^xsd:int;
@@ -250,13 +259,15 @@ def process_image_directories(input_base_dir, output_dir, compress=False):
 
     Directory structure:
         input_base_dir/
-            TCGA-XX-XXXX-XXX-XX-XXX.UUID.svs/
-                X_Y_WIDTH_HEIGHT_INFO-features.csv
-                X_Y_WIDTH_HEIGHT_INFO-features.csv
-                ...
+            *.svs.tar.gz/
+                *_polygon/
+                    *.svs/
+                        X_Y_WIDTH_HEIGHT_INFO-features.csv
+                        X_Y_WIDTH_HEIGHT_INFO-features.csv
+                        ...
 
     Args:
-        input_base_dir: Base directory containing SVS image subdirectories
+        input_base_dir: Base directory containing SVS tar.gz subdirectories
         output_dir: Directory for output TTL files
         compress: If True, gzip compress the output files
     """
@@ -266,71 +277,87 @@ def process_image_directories(input_base_dir, output_dir, compress=False):
     # Create output directory if it doesn't exist
     output_path.mkdir(parents=True, exist_ok=True)
 
-    # Find all subdirectories (SVS image directories)
-    image_dirs = [d for d in input_path.iterdir() if d.is_dir()]
+    # Find all *_polygon directories within the nested structure
+    polygon_dirs = list(input_path.glob("*.svs.tar.gz/*_polygon"))
 
-    if not image_dirs:
-        print(f"No image directories found in {input_base_dir}")
+    if not polygon_dirs:
+        print(f"No *_polygon directories found in {input_base_dir}")
         return
 
-    print(f"Found {len(image_dirs)} image directories to process")
+    print(f"Found {len(polygon_dirs)} polygon directories to process")
 
     total_success = 0
     total_error = 0
 
-    for image_dir in image_dirs:
-        image_name = image_dir.name
-        print(f"\nProcessing image: {image_name}")
+    for polygon_dir in polygon_dirs:
+        # Extract cancer type and prefix from polygon directory (e.g., "blca" from "blca_polygon")
+        polygon_name = polygon_dir.name
+        cancer_type = polygon_name.replace("_polygon", "") if polygon_name.endswith("_polygon") else None
+        prefix = cancer_type + "_" if cancer_type else ""
 
-        # Get all CSV files in this image directory
-        csv_files = list(image_dir.glob("*-features.csv"))
+        print(f"\nProcessing polygon directory: {polygon_name} (cancer type: {cancer_type or 'unknown'})")
 
-        if not csv_files:
-            print(f"  ⚠ No CSV files found in {image_name}")
+        # Find all *.svs subdirectories within the polygon directory
+        svs_dirs = [d for d in polygon_dir.iterdir() if d.is_dir() and d.name.endswith(".svs")]
+
+        if not svs_dirs:
+            print(f"  ⚠ No .svs directories found in {polygon_name}")
             continue
 
-        print(f"  Found {len(csv_files)} patch CSV files")
+        for svs_dir in svs_dirs:
+            image_name = svs_dir.name
+            print(f"  Processing image: {image_name}")
 
-        # Generate image hash once for all patches
-        image_hash = get_image_hash(image_id=image_name)
+            # Get all CSV files in this SVS directory
+            csv_files = list(svs_dir.glob("*-features.csv"))
 
-        success_count = 0
-        error_count = 0
+            if not csv_files:
+                print(f"    ⚠ No CSV files found in {image_name}")
+                continue
 
-        for csv_file in csv_files:
-            try:
-                # Convert to GeoSPARQL
-                ttl_content = create_geosparql_ttl(csv_file, image_name, image_hash)
+            print(f"    Found {len(csv_files)} patch CSV files")
 
-                # Write output file - use image_name as subdirectory
-                image_output_dir = output_path / image_name
-                image_output_dir.mkdir(parents=True, exist_ok=True)
+            # Generate image hash once for all patches
+            image_hash = get_image_hash(image_id=image_name)
 
-                output_filename = csv_file.stem + ".ttl"
-                if compress:
-                    output_filename += ".gz"
+            success_count = 0
+            error_count = 0
 
-                output_file = image_output_dir / output_filename
+            for csv_file in csv_files:
+                try:
+                    # Convert to GeoSPARQL with cancer type
+                    ttl_content = create_geosparql_ttl(csv_file, image_name, image_hash, cancer_type)
 
-                if compress:
-                    with gzip.open(output_file, "wt", encoding="utf-8") as f:
-                        f.write(ttl_content)
-                else:
-                    with open(output_file, "w", encoding="utf-8") as f:
-                        f.write(ttl_content)
+                    # Write output file - use image_name as subdirectory
+                    image_output_dir = output_path / image_name
+                    image_output_dir.mkdir(parents=True, exist_ok=True)
 
-                success_count += 1
+                    # Add prefix to output filename
+                    output_filename = prefix + csv_file.stem + ".ttl"
+                    if compress:
+                        output_filename += ".gz"
 
-            except Exception as e:
-                print(f"    ✗ Error processing {csv_file.name}: {e}")
-                error_count += 1
+                    output_file = image_output_dir / output_filename
 
-        print(f"  ✓ Processed {success_count} patches successfully")
-        if error_count > 0:
-            print(f"  ✗ {error_count} errors")
+                    if compress:
+                        with gzip.open(output_file, "wt", encoding="utf-8") as f:
+                            f.write(ttl_content)
+                    else:
+                        with open(output_file, "w", encoding="utf-8") as f:
+                            f.write(ttl_content)
 
-        total_success += success_count
-        total_error += error_count
+                    success_count += 1
+
+                except Exception as e:
+                    print(f"      ✗ Error processing {csv_file.name}: {e}")
+                    error_count += 1
+
+            print(f"    ✓ Processed {success_count} patches successfully")
+            if error_count > 0:
+                print(f"    ✗ {error_count} errors")
+
+            total_success += success_count
+            total_error += error_count
 
     print("\n" + "=" * 60)
     print("Processing complete!")
@@ -342,7 +369,7 @@ def main():
     """Main entry point for the ETL script."""
 
     # Configuration
-    INPUT_BASE_DIR = "./nuclear_segmentation_data"  # Base dir with SVS subdirectories
+    INPUT_BASE_DIR = "./nuclear_segmentation_data/cvpr-data"  # Base dir with *.svs.tar.gz subdirectories
     OUTPUT_DIR = "./nuclear_geosparql_output"  # Directory for output TTL files
     COMPRESS_OUTPUT = True  # Set to True to gzip compress output files
 
@@ -355,42 +382,8 @@ def main():
     )
     print()
 
-    # Test mode for single file
-    test_mode = True
-
-    if test_mode:
-        # Test with the example file
-        test_file = "24001_72001_4000_4000_0.2325_1-features.csv"
-        test_image_name = (
-            "TCGA-05-4245-01Z-00-DX1.36ff5403-d4bb-4415-b2c5-7c750d655cde.svs"
-        )
-        test_path = Path(test_file)
-
-        if test_path.exists():
-            print(f"Testing with: {test_file}")
-            print(f"Image name: {test_image_name}")
-
-            ttl_content = create_geosparql_ttl(test_path, test_image_name)
-
-            # Save test output
-            output_path = Path(OUTPUT_DIR)
-            output_path.mkdir(parents=True, exist_ok=True)
-
-            output_file = output_path / (test_path.stem + "_test.ttl")
-
-            with open(output_file, "w", encoding="utf-8") as f:
-                f.write(ttl_content)
-
-            print(f"Test output saved to: {output_file}")
-            print(f"\nGenerated {ttl_content.count('rdfs:member')} features")
-            print("\nFirst 2000 characters of output:")
-            print(ttl_content[:2000])
-        else:
-            print(f"Test file not found: {test_file}")
-            print("Set test_mode = False to process directories")
-    else:
-        # Process all image directories
-        process_image_directories(INPUT_BASE_DIR, OUTPUT_DIR, compress=COMPRESS_OUTPUT)
+    # Process all image directories
+    process_image_directories(INPUT_BASE_DIR, OUTPUT_DIR, compress=COMPRESS_OUTPUT)
 
 
 if __name__ == "__main__":
