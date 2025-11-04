@@ -1,10 +1,7 @@
 #!/bin/bash
-# rclone lsd ${RCLONE_REMOTE} | awk '{print $5}' | grep '_polygon$'
 
-# List all subfolders in cvpr-data
-rclone lsd ${RCLONE_REMOTE} | awk '{print $5}' | grep '_polygon$' | while read -r folder; do
-    echo "Copying $folder..."
-    rclone copy "${RCLONE_REMOTE}/$folder" ./cvpr-data/ --progress
-done
+# List all the *_polygon folders under cvpr-data
+rclone lsd ${RCLONE_REMOTE} | awk '{print $5}' | grep '_polygon$' > polygon_dirs.txt
 
-echo "Done :)"
+# Run up to 32 copies of rclone at once (tune this)
+cat polygon_dirs.txt | parallel -j32 "echo '⚡️ Copying {}' && rclone copy ${RCLONE_REMOTE}/{} ./cvpr-data/{} --progress"
