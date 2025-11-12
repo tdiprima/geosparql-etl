@@ -29,6 +29,7 @@ from pathlib import Path
 
 try:
     import rich_argparse
+
     rich_argparse.RichHelpFormatter.styles["argparse.groups"] = "bold yellow"
 except ImportError:
     rich_argparse = None
@@ -273,7 +274,9 @@ def create_geosparql_ttl(csv_path, image_name, image_hash=None, cancer_type=None
     return ttl_content
 
 
-def process_single_csv(csv_file, image_name, image_hash, cancer_type, prefix, output_path, compress):
+def process_single_csv(
+    csv_file, image_name, image_hash, cancer_type, prefix, output_path, compress
+):
     """
     Process a single CSV file - designed to be called in parallel.
 
@@ -298,7 +301,7 @@ def process_single_csv(csv_file, image_name, image_hash, cancer_type, prefix, ou
         output_file = image_output_dir / output_filename
 
         if output_file.exists():
-            return ('skipped', csv_file.name)
+            return ("skipped", csv_file.name)
 
         # Convert to GeoSPARQL with cancer type
         ttl_content = create_geosparql_ttl(
@@ -315,13 +318,15 @@ def process_single_csv(csv_file, image_name, image_hash, cancer_type, prefix, ou
             with open(output_file, "w", encoding="utf-8") as f:
                 f.write(ttl_content)
 
-        return ('success', csv_file.name)
+        return ("success", csv_file.name)
 
     except Exception as e:
-        return ('error', csv_file.name, str(e))
+        return ("error", csv_file.name, str(e))
 
 
-def process_image_directories(input_base_dir, output_dir, compress=False, start_from_image=None, workers=None):
+def process_image_directories(
+    input_base_dir, output_dir, compress=False, start_from_image=None, workers=None
+):
     """
     Process directories of SVS images, where each directory contains CSV patch files.
 
@@ -366,7 +371,9 @@ def process_image_directories(input_base_dir, output_dir, compress=False, start_
     total_success = 0
     total_error = 0
     total_skipped = 0
-    found_start_image = (start_from_image is None)  # If no start image specified, start immediately
+    found_start_image = (
+        start_from_image is None
+    )  # If no start image specified, start immediately
 
     for cancer_type_dir in cancer_type_dirs:
         # Extract cancer type from directory name (e.g., "blca" from "blca_polygon")
@@ -425,7 +432,9 @@ def process_image_directories(input_base_dir, output_dir, compress=False, start_
                             found_start_image = True
                             print(f"  ▶ Starting from image: {image_name}")
                         else:
-                            print(f"  ⏭ Skipping image (before start point): {image_name}")
+                            print(
+                                f"  ⏭ Skipping image (before start point): {image_name}"
+                            )
                             continue
                     else:
                         print(f"  Processing image: {image_name}")
@@ -454,7 +463,7 @@ def process_image_directories(input_base_dir, output_dir, compress=False, start_
                         cancer_type=cancer_type,
                         prefix=prefix,
                         output_path=output_path,
-                        compress=compress
+                        compress=compress,
                     )
 
                     # Process CSV files in parallel
@@ -463,13 +472,15 @@ def process_image_directories(input_base_dir, output_dir, compress=False, start_
 
                     # Count results
                     for result in results:
-                        if result[0] == 'success':
+                        if result[0] == "success":
                             success_count += 1
-                        elif result[0] == 'skipped':
+                        elif result[0] == "skipped":
                             skipped_count += 1
-                        elif result[0] == 'error':
+                        elif result[0] == "error":
                             error_count += 1
-                            error_msg = result[2] if len(result) > 2 else "Unknown error"
+                            error_msg = (
+                                result[2] if len(result) > 2 else "Unknown error"
+                            )
                             print(f"      ✗ Error processing {result[1]}: {error_msg}")
 
                     print(f"    ✓ Processed {success_count} patches successfully")
@@ -493,52 +504,59 @@ def main():
     """Main entry point for the ETL script."""
 
     # Set up argument parser
-    formatter_class = rich_argparse.RichHelpFormatter if rich_argparse else argparse.HelpFormatter
+    formatter_class = (
+        rich_argparse.RichHelpFormatter if rich_argparse else argparse.HelpFormatter
+    )
     parser = argparse.ArgumentParser(
         description="Nuclear Segmentation to GeoSPARQL ETL Converter - "
-                    "Converts nuclear segmentation CSV files to GeoSPARQL RDF format",
-        formatter_class=formatter_class
+        "Converts nuclear segmentation CSV files to GeoSPARQL RDF format",
+        formatter_class=formatter_class,
     )
 
     parser.add_argument(
-        "-i", "--input",
+        "-i",
+        "--input",
         default="/data3/tammy/nuclear_segmentation_data/cvpr-data",
-        help="Input base directory containing cancer type folders (*_polygon)"
+        help="Input base directory containing cancer type folders (*_polygon)",
     )
 
     parser.add_argument(
-        "-o", "--output",
+        "-o",
+        "--output",
         default="./nuclear_geosparql_output",
-        help="Output directory for TTL files"
+        help="Output directory for TTL files",
     )
 
     parser.add_argument(
-        "-c", "--compress",
+        "-c",
+        "--compress",
         action="store_true",
         default=True,
-        help="Gzip compress output files (default: True)"
+        help="Gzip compress output files (default: True)",
     )
 
     parser.add_argument(
         "--no-compress",
         action="store_false",
         dest="compress",
-        help="Disable gzip compression"
+        help="Disable gzip compression",
     )
 
     parser.add_argument(
-        "-s", "--start-from",
+        "-s",
+        "--start-from",
         metavar="IMAGE_NAME",
         help="Start processing from a specific image (e.g., 'TCGA-A7-A0CD-01Z-00-DX1.F045B9C8-049C-41BF-8432-EF89F236D34D.svs'). "
-             "All images before this one will be skipped."
+        "All images before this one will be skipped.",
     )
 
     parser.add_argument(
-        "-w", "--workers",
+        "-w",
+        "--workers",
         type=int,
         metavar="N",
         help=f"Number of parallel workers for processing CSV files (default: CPU count - 1 = {max(1, cpu_count() - 1)}). "
-             f"With {cpu_count()} cores available, you can use up to {cpu_count()} workers."
+        f"With {cpu_count()} cores available, you can use up to {cpu_count()} workers.",
     )
 
     args = parser.parse_args()
@@ -548,7 +566,9 @@ def main():
     print(f"Input base directory:  {args.input}")
     print(f"Output directory:      {args.output}")
     print(f"Compression:           {'Enabled (gzip)' if args.compress else 'Disabled'}")
-    print(f"Parallel workers:      {args.workers if args.workers else f'{max(1, cpu_count() - 1)} (auto)'}")
+    print(
+        f"Parallel workers:      {args.workers if args.workers else f'{max(1, cpu_count() - 1)} (auto)'}"
+    )
     if args.start_from:
         print(f"Start from image:      {args.start_from}")
     print()
@@ -559,7 +579,7 @@ def main():
         args.output,
         compress=args.compress,
         start_from_image=args.start_from,
-        workers=args.workers
+        workers=args.workers,
     )
 
 
