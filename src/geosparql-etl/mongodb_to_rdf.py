@@ -9,10 +9,8 @@ import gzip
 import hashlib
 import json
 import logging
-import os
 import shutil
 import sys
-from collections import deque
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -23,7 +21,7 @@ from tqdm import tqdm
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from rdflib import Literal, Namespace, URIRef
-from rdflib.namespace import DCTERMS, RDF, RDFS, XSD
+from rdflib.namespace import RDF, RDFS, XSD
 from utils import (GEO, PROV, ETLConfig, create_graph, generate_batch_filename,
                    mongo_connection)
 
