@@ -5,8 +5,10 @@ Author: Bear 🐻
 """
 
 import gc  # Garbage collection
+import gzip  # For compressing TTL files
 import hashlib
 import logging
+import os
 import sys
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
@@ -18,7 +20,7 @@ from tqdm import tqdm
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from rdflib import Literal, Namespace, URIRef
-from rdflib.namespace import RDF, RDFS, XSD
+from rdflib.namespace import DCTERMS, RDF, RDFS, XSD
 from utils import GEO, PROV, create_graph, mongo_connection
 
 # =====================
@@ -31,9 +33,13 @@ CHECKPOINT_FILE = Path("current_checkpoint.txt")  # Simple text file
 LOG_FILE = "etl_run.log"
 LOG_MAX_BYTES = 10 * 1024 * 1024  # 10MB log files
 LOG_BACKUP_COUNT = 5  # Keep only 5 logs to save space
+GZIP_COMPRESSION_LEVEL = 6  # 1=fastest, 9=best compression, 6=good balance
 
 # Create output directory
 OUTPUT_DIR.mkdir(exist_ok=True)
+
+# Note: Output files will be gzipped (.ttl.gz) to save ~70% disk space
+# For 4B marks: ~750GB-1TB instead of 2.5-3TB
 
 # =====================
 # 🌐 NAMESPACES
@@ -336,17 +342,27 @@ def process_one_analysis(db, analysis_doc, checkpoint):
 
                     # Write batch when full
                     if batch_marks >= BATCH_SIZE:
-                        # Write file
+                        # Write compressed file
                         output_file = (
-                            OUTPUT_DIR / exec_id / img_id / f"batch_{batch_num:06d}.ttl"
+                            OUTPUT_DIR
+                            / exec_id
+                            / img_id
+                            / f"batch_{batch_num:06d}.ttl.gz"
                         )
                         output_file.parent.mkdir(parents=True, exist_ok=True)
 
                         ttl_content = g.serialize(format="turtle")
-                        with open(output_file, "w", encoding="utf-8") as f:
+                        with gzip.open(
+                            output_file,
+                            "wt",
+                            encoding="utf-8",
+                            compresslevel=GZIP_COMPRESSION_LEVEL,
+                        ) as f:
                             f.write(ttl_content)
 
-                        logger.debug(f"Wrote batch {batch_num} ({batch_marks} marks)")
+                        logger.debug(
+                            f"Wrote batch {batch_num} ({batch_marks} marks) - compressed"
+                        )
 
                         # Start new batch
                         batch_num += 1
@@ -377,15 +393,22 @@ def process_one_analysis(db, analysis_doc, checkpoint):
                 # Write final batch
                 if batch_marks > 0:
                     output_file = (
-                        OUTPUT_DIR / exec_id / img_id / f"batch_{batch_num:06d}.ttl"
+                        OUTPUT_DIR / exec_id / img_id / f"batch_{batch_num:06d}.ttl.gz"
                     )
                     output_file.parent.mkdir(parents=True, exist_ok=True)
 
                     ttl_content = g.serialize(format="turtle")
-                    with open(output_file, "w", encoding="utf-8") as f:
+                    with gzip.open(
+                        output_file,
+                        "wt",
+                        encoding="utf-8",
+                        compresslevel=GZIP_COMPRESSION_LEVEL,
+                    ) as f:
                         f.write(ttl_content)
 
-                    logger.debug(f"Wrote final batch {batch_num} ({batch_marks} marks)")
+                    logger.debug(
+                        f"Wrote final batch {batch_num} ({batch_marks} marks) - compressed"
+                    )
 
         finally:
             marks_cursor.close()
@@ -408,6 +431,8 @@ def main():
     """Main function - optimized for 4 billion marks"""
     logger.info("=" * 60)
     logger.info("MASSIVE DATASET ETL - Optimized for ~4 billion marks")
+    logger.info("Output: Compressed TTL files (.ttl.gz)")
+    logger.info("Estimated disk usage: ~750GB-1TB (vs 2.5-3TB uncompressed)")
     logger.info("=" * 60)
 
     checkpoint = SimpleCheckpoint(CHECKPOINT_FILE)
