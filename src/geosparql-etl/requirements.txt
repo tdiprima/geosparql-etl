@@ -1,0 +1,17 @@
+# MongoDB to RDF ETL Requirements
+# Python 3.9+ required
+
+# Core RDF library for creating and serializing RDF graphs
+rdflib>=7.4.0
+
+# MongoDB driver for Python
+pymongo>=4.15.4
+
+# Progress bars for tracking ETL progress
+tqdm>=4.67.1
+
+# Optional but recommended for better performance:
+# Faster JSON parsing (drop-in replacement for standard json)
+ujson>=5.11.0
+
+shapely>=2.0.7
