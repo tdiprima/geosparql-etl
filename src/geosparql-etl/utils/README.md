@@ -9,6 +9,7 @@ This package provides utility modules to simplify MongoDB ETL operations.
 Provides context managers for clean connection handling.
 
 **Basic Usage:**
+
 ```python
 from utils import mongo_connection
 
@@ -21,6 +22,7 @@ with mongo_connection("mongodb://localhost:27018/", "camic") as db:
 ```
 
 **Class-based Usage:**
+
 ```python
 from utils import MongoConnection
 
@@ -35,6 +37,7 @@ with MongoConnection("mongodb://localhost:27018/", "camic") as db:
 Centralized configuration with environment variable support.
 
 **Usage:**
+
 ```python
 from utils import AppConfig, MongoConfig, ETLConfig
 
@@ -56,6 +59,7 @@ etl_config = ETLConfig(
 ```
 
 **Environment Variables:**
+
 ```bash
 export MONGO_URI="mongodb://localhost:27018/"
 export MONGO_DB_NAME="camic"
@@ -68,6 +72,7 @@ export ETL_OUTPUT_DIR="output"
 Track progress for resumable operations.
 
 **Usage:**
+
 ```python
 from utils import CheckpointManager
 
@@ -92,6 +97,7 @@ print(f"Processed: {stats['processed_count']}")
 ```
 
 **Simple Checkpoint:**
+
 ```python
 from utils import SimpleCheckpoint
 
@@ -111,6 +117,7 @@ for item in items:
 Consistent logging setup across scripts.
 
 **Usage:**
+
 ```python
 from utils import setup_logger, setup_etl_logger
 
@@ -129,6 +136,8 @@ logger.info("Processing batch 1")
 Handle MongoDB types in JSON serialization.
 
 **Usage:**
+
+
 ```python
 from utils import (
     MongoJSONEncoder,
@@ -158,6 +167,7 @@ save_mongo_document_to_file(doc, "output.json")
 Extract and process geometries from MongoDB documents.
 
 **Usage:**
+
 ```python
 from utils import (
     geometry_to_wkt,
@@ -184,6 +194,7 @@ print(f"Area: {area}")
 Utilities for file and directory management.
 
 **Usage:**
+
 ```python
 from utils import (
     ensure_directory,
@@ -214,6 +225,7 @@ for file in ttl_files:
 Simplify RDF graph creation and manipulation.
 
 **Usage:**
+
 ```python
 from utils import (
     create_graph,
@@ -327,6 +339,7 @@ with mongo_connection("mongodb://localhost:27018/", "camic") as db:
 ## Migration Guide
 
 ### Before (old code):
+
 ```python
 from pymongo import MongoClient
 
@@ -342,6 +355,7 @@ client.close()
 ```
 
 ### After (with utilities):
+
 ```python
 from utils import mongo_connection, geometry_to_wkt
 
@@ -353,7 +367,10 @@ with mongo_connection("mongodb://localhost:27018/", "camic") as db:
 ```
 
 Benefits:
+
 - Automatic connection cleanup
 - Better error handling
 - More concise code
 - Handles missing geometry gracefully
+
+<br>
