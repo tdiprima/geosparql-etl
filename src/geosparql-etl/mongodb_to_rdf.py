@@ -9,22 +9,21 @@ import gc
 import gzip
 import hashlib
 import logging
-import os
 import signal
 import sys
 import time
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
-from multiprocessing import Manager, Pool, Queue, current_process
+from multiprocessing import Pool
 from pathlib import Path
 
-from tqdm import tqdm
 
 # Add parent directory to path to import utils
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from rdflib import Literal, Namespace, URIRef
-from rdflib.namespace import DCTERMS, RDF, RDFS, XSD
+from rdflib.namespace import RDF, RDFS, XSD
+
 from utils import GEO, PROV, create_graph, mongo_connection
 
 # =====================
@@ -451,7 +450,7 @@ def main():
     main_logger.info("=" * 60)
     main_logger.info(f"PARALLEL ETL - Using {NUM_WORKERS} cores")
     main_logger.info(f"MongoDB: {MONGO_HOST}:{MONGO_PORT}/{MONGO_DB}")
-    main_logger.info(f"Output: Compressed TTL files (.ttl.gz)")
+    main_logger.info("Output: Compressed TTL files (.ttl.gz)")
     main_logger.info("=" * 60)
 
     # Initialize checkpoint manager
