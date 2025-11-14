@@ -552,108 +552,108 @@ def main():
             main_logger.info("Nothing to process!")
             return
 
-            # Process in chunks to avoid loading all documents at once
-            chunk_size = NUM_WORKERS * 10  # Process 10 rounds of work at a time
-            total_processed = 0
-            total_marks = 0
-            start_time = time.time()
+        # Process in chunks to avoid loading all documents at once
+        chunk_size = NUM_WORKERS * 10  # Process 10 rounds of work at a time
+        total_processed = 0
+        total_marks = 0
+        start_time = time.time()
 
-            # Create process pool
-            with Pool(processes=NUM_WORKERS) as pool:
-                try:
-                    for chunk_start in range(0, len(analyses_to_process), chunk_size):
-                        chunk_ids = analyses_to_process[
-                                    chunk_start: chunk_start + chunk_size
-                                    ]
+        # Create process pool
+        with Pool(processes=NUM_WORKERS) as pool:
+            try:
+                for chunk_start in range(0, len(analyses_to_process), chunk_size):
+                    chunk_ids = analyses_to_process[
+                                chunk_start: chunk_start + chunk_size
+                                ]
 
-                        # Fetch full documents for this chunk
-                        chunk_docs = []
-                        for analysis_doc in db.analysis.find({"_id": {"$in": chunk_ids}}):
-                            chunk_docs.append(analysis_doc)
+                    # Fetch full documents for this chunk
+                    chunk_docs = []
+                    for analysis_doc in db.analysis.find({"_id": {"$in": chunk_ids}}):
+                    chunk_docs.append(analysis_doc)
 
-                        if not chunk_docs:
+                    if not chunk_docs:
+                        continue
+
+                    main_logger.info(
+                        f"Processing chunk {chunk_start // chunk_size + 1} ({len(chunk_docs)} analyses)"
+                    )
+
+                    # Prepare worker arguments
+                    worker_args = []
+                    for i, doc in enumerate(chunk_docs):
+                        worker_id = i % NUM_WORKERS
+                        worker_args.append((worker_id, doc, CHECKPOINT_DIR))
+
+                    chunk_index = chunk_start // chunk_size + 1
+                    main_logger.info(
+                        "Dispatching %d analyses to workers for chunk %d",
+                        len(worker_args),
+                        chunk_index,
+                    )
+
+                    # Process in parallel and stream results as they finish
+                    for i, result in enumerate(
+                            pool.imap_unordered(process_analysis_worker, worker_args, chunksize=1),
+                            1,
+                    ):
+                        if not result:
                             continue
 
-                        main_logger.info(
-                            f"Processing chunk {chunk_start // chunk_size + 1} ({len(chunk_docs)} analyses)"
-                        )
+                        status = result[0]
 
-                        # Prepare worker arguments
-                        worker_args = []
-                        for i, doc in enumerate(chunk_docs):
-                            worker_id = i % NUM_WORKERS
-                            worker_args.append((worker_id, doc, CHECKPOINT_DIR))
+                        if status == "completed":
+                            _, analysis_id, mark_count, batch_count = result[:4]
+                            checkpoint.mark_completed(analysis_id)
+                            total_processed += 1
+                            total_marks += mark_count
 
-                        chunk_index = chunk_start // chunk_size + 1
-                        main_logger.info(
-                            "Dispatching %d analyses to workers for chunk %d",
-                            len(worker_args),
-                            chunk_index,
-                        )
+                            main_logger.info(
+                                "Chunk %d: completed analysis %s – %s marks in %d batches "
+                                "(total processed: %s / %s analyses)",
+                                chunk_index,
+                                analysis_id,
+                                f"{mark_count:,}",
+                                batch_count,
+                                f"{total_processed:,}",
+                                f"{len(analyses_to_process):,}",
+                            )
 
-                        # Process in parallel and stream results as they finish
-                        for i, result in enumerate(
-                                pool.imap_unordered(process_analysis_worker, worker_args, chunksize=1),
-                                1,
-                        ):
-                            if not result:
-                                continue
+                        elif status == "failed":
+                            _, analysis_id, _, _, error = result
+                            checkpoint.mark_failed(analysis_id, error)
+                            main_logger.error(
+                                "Chunk %d: FAILED analysis %s – %s",
+                                chunk_index,
+                                analysis_id,
+                                error,
+                            )
 
-                            status = result[0]
+                        # Throttled progress report every 50 completed analyses
+                        if total_processed and total_processed % 50 == 0:
+                            elapsed = time.time() - start_time
+                            rate = total_marks / elapsed if elapsed > 0 else 0
+                            eta_hours = (
+                                (len(analyses_to_process) - total_processed)
+                                * (elapsed / total_processed)
+                                / 3600
+                                if total_processed > 0
+                                else 0
+                            )
 
-                            if status == "completed":
-                                _, analysis_id, mark_count, batch_count = result[:4]
-                                checkpoint.mark_completed(analysis_id)
-                                total_processed += 1
-                                total_marks += mark_count
+                            main_logger.info(
+                                f"""
+    Progress Report:
+      Processed: {total_processed:,} / {len(analyses_to_process):,} analyses
+      Total marks: {total_marks:,}
+      Rate: {rate:.0f} marks/sec
+      Estimated time remaining: {eta_hours:.1f} hours
+    """
+                            )
 
-                                main_logger.info(
-                                    "Chunk %d: completed analysis %s – %s marks in %d batches "
-                                    "(total processed: %s / %s analyses)",
-                                    chunk_index,
-                                    analysis_id,
-                                    f"{mark_count:,}",
-                                    batch_count,
-                                    f"{total_processed:,}",
-                                    f"{len(analyses_to_process):,}",
-                                )
-
-                            elif status == "failed":
-                                _, analysis_id, _, _, error = result
-                                checkpoint.mark_failed(analysis_id, error)
-                                main_logger.error(
-                                    "Chunk %d: FAILED analysis %s – %s",
-                                    chunk_index,
-                                    analysis_id,
-                                    error,
-                                )
-
-                            # Throttled progress report every 50 completed analyses
-                            if total_processed and total_processed % 50 == 0:
-                                elapsed = time.time() - start_time
-                                rate = total_marks / elapsed if elapsed > 0 else 0
-                                eta_hours = (
-                                    (len(analyses_to_process) - total_processed)
-                                    * (elapsed / total_processed)
-                                    / 3600
-                                    if total_processed > 0
-                                    else 0
-                                )
-
-                                main_logger.info(
-                                    f"""
-        Progress Report:
-          Processed: {total_processed:,} / {len(analyses_to_process):,} analyses
-          Total marks: {total_marks:,}
-          Rate: {rate:.0f} marks/sec
-          Estimated time remaining: {eta_hours:.1f} hours
-        """
-                                )
-
-                except KeyboardInterrupt:
-                    main_logger.warning("⚠️ Interrupted by user - checkpoint saved")
-                    pool.terminate()
-                    pool.join()
+            except KeyboardInterrupt:
+                main_logger.warning("⚠️ Interrupted by user - checkpoint saved")
+                pool.terminate()
+                pool.join()
 
     # Final statistics
     final_stats = checkpoint.get_stats()
