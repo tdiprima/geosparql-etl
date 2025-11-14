@@ -1,17 +1,21 @@
 """
-Massive Dataset MongoDB → GeoSPARQL ETL
-Optimized for ~4 billion marks with minimal memory footprint
+Parallel MongoDB → GeoSPARQL ETL for 24 cores
+Processes multiple analyses simultaneously for massive speedup
+Optimized for ~4 billion marks
 Author: Bear 🐻
 """
 
-import gc  # Garbage collection
-import gzip  # For compressing TTL files
+import gc
+import gzip
 import hashlib
 import logging
 import os
+import signal
 import sys
+import time
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
+from multiprocessing import Manager, Pool, Queue, current_process
 from pathlib import Path
 
 from tqdm import tqdm
@@ -24,27 +28,32 @@ from rdflib.namespace import DCTERMS, RDF, RDFS, XSD
 from utils import GEO, PROV, create_graph, mongo_connection
 
 # =====================
-# 📧 CONFIG - OPTIMIZED FOR MASSIVE SCALE
+# 📧 CONFIG - OPTIMIZED FOR PARALLEL PROCESSING
 # =====================
-# SMALLER BATCHES = LESS MEMORY
-BATCH_SIZE = 1000  # Smaller batches to minimize memory usage
+NUM_WORKERS = 20  # Use 20 cores for processing, leave 4 for system/MongoDB
+BATCH_SIZE = 1000  # Marks per TTL file
 OUTPUT_DIR = Path("ttl_output")
-CHECKPOINT_FILE = Path("current_checkpoint.txt")  # Simple text file
-LOG_FILE = "etl_run.log"
-LOG_MAX_BYTES = 10 * 1024 * 1024  # 10MB log files
-LOG_BACKUP_COUNT = 5  # Keep only 5 logs to save space
-GZIP_COMPRESSION_LEVEL = 6  # 1=fastest, 9=best compression, 6=good balance
+CHECKPOINT_DIR = Path("checkpoints")  # Multiple checkpoint files
+LOG_FILE = "etl_parallel.log"
+LOG_MAX_BYTES = 50 * 1024 * 1024  # 50MB log files
+LOG_BACKUP_COUNT = 10
+GZIP_COMPRESSION_LEVEL = 6  # 1=fastest, 9=best compression
 
-# Create output directory
+# MongoDB connection settings
+# IMPORTANT: Update these based on where you run the script!
+# MONGO_HOST = "localhost"  # Change to "172.18.0.2" if running on server
+# MONGO_PORT = 27018  # Change to 27017 if connecting directly
+MONGO_HOST = "172.18.0.2"
+MONGO_PORT = 27017
+MONGO_DB = "camic"
+
+# Create directories
 OUTPUT_DIR.mkdir(exist_ok=True)
-
-# Note: Output files will be gzipped (.ttl.gz) to save ~70% disk space
-# For 4B marks: ~750GB-1TB instead of 2.5-3TB
+CHECKPOINT_DIR.mkdir(exist_ok=True)
 
 # =====================
 # 🌐 NAMESPACES
 # =====================
-EX = Namespace("https://halcyon.is/ns/")
 HAL = Namespace("https://halcyon.is/ns/")
 EXIF = Namespace("http://www.w3.org/2003/12/exif/ns#")
 DC = Namespace("http://purl.org/dc/terms/")
@@ -53,100 +62,113 @@ SNO = Namespace("http://snomed.info/id/")
 
 NUCLEAR_MATERIAL_SNOMED = "http://snomed.info/id/68841002"
 
-# =====================
-# 🪵 SIMPLE ROTATING LOGGER
-# =====================
-logger = logging.getLogger("ETL")
-logger.setLevel(logging.INFO)
 
-# Rotating file handler
+# =====================
+# 🪵 LOGGER SETUP
+# =====================
+def setup_worker_logger(worker_id):
+    """Setup logger for each worker process"""
+    logger = logging.getLogger(f"Worker-{worker_id}")
+    logger.setLevel(logging.INFO)
+
+    # File handler for this worker
+    handler = RotatingFileHandler(
+        f"etl_worker_{worker_id}.log", maxBytes=LOG_MAX_BYTES, backupCount=2
+    )
+    formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+
+    return logger
+
+
+# Main logger
+main_logger = logging.getLogger("ETL-Main")
+main_logger.setLevel(logging.INFO)
 handler = RotatingFileHandler(
     LOG_FILE, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUP_COUNT
 )
-formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 handler.setFormatter(formatter)
-logger.addHandler(handler)
+main_logger.addHandler(handler)
 
-# Console handler with simpler format
+# Console handler
 console = logging.StreamHandler()
 console.setFormatter(logging.Formatter("%(asctime)s - %(message)s", "%H:%M:%S"))
-logger.addHandler(console)
+main_logger.addHandler(console)
 
 
 # =====================
-# 🔍 ULTRA-SIMPLE CHECKPOINT
+# 🔍 PARALLEL CHECKPOINT MANAGER
 # =====================
-class SimpleCheckpoint:
-    """
-    Dead simple checkpoint that just tracks the last processed analysis ID.
-    For 4B marks, we can't keep them all in memory!
-    """
+class ParallelCheckpointManager:
+    """Checkpoint manager that works across multiple processes"""
 
-    def __init__(self, checkpoint_file):
-        self.checkpoint_file = Path(checkpoint_file)
-        self.last_processed_id = None
-        self.processed_count = 0
-        self.failed_count = 0
-        self.load()
+    def __init__(self, checkpoint_dir):
+        self.checkpoint_dir = Path(checkpoint_dir)
+        self.completed_file = self.checkpoint_dir / "completed_analyses.txt"
+        self.failed_file = self.checkpoint_dir / "failed_analyses.txt"
+        self.in_progress_file = self.checkpoint_dir / "in_progress.txt"
 
-    def load(self):
-        """Load last checkpoint - just the last ID we processed"""
-        if self.checkpoint_file.exists():
-            try:
-                with open(self.checkpoint_file, "r") as f:
-                    lines = f.readlines()
-                    if lines:
-                        # Format: last_id|processed_count|failed_count
-                        parts = lines[0].strip().split("|")
-                        self.last_processed_id = (
-                            parts[0] if parts[0] != "None" else None
-                        )
-                        self.processed_count = int(parts[1]) if len(parts) > 1 else 0
-                        self.failed_count = int(parts[2]) if len(parts) > 2 else 0
-                        logger.info(
-                            f"Resuming from checkpoint: {self.last_processed_id}, "
-                            f"Already processed: {self.processed_count}, Failed: {self.failed_count}"
-                        )
-            except Exception as e:
-                logger.error(f"Error loading checkpoint: {e}")
+        # Load completed and failed sets
+        self.completed = self._load_set(self.completed_file)
+        self.failed = self._load_set(self.failed_file)
 
-    def save(self, analysis_id):
-        """Save checkpoint with just the last processed ID"""
-        self.last_processed_id = str(analysis_id)
-        self.checkpoint_file.write_text(
-            f"{self.last_processed_id}|{self.processed_count}|{self.failed_count}\n"
-        )
+        # Clear in-progress file on start (in case of previous crash)
+        if self.in_progress_file.exists():
+            self.in_progress_file.unlink()
 
-    def mark_processed(self, analysis_id):
-        """Mark as processed and save immediately"""
-        self.processed_count += 1
-        self.save(analysis_id)
+    def _load_set(self, filepath):
+        """Load a set of IDs from a file"""
+        ids = set()
+        if filepath.exists():
+            with open(filepath, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        ids.add(line)
+        return ids
 
-        # Log progress every 10 analyses
-        if self.processed_count % 10 == 0:
-            logger.info(
-                f"Progress: {self.processed_count} analyses processed, {self.failed_count} failed"
-            )
+    def is_completed(self, analysis_id):
+        """Check if analysis is already completed"""
+        return str(analysis_id) in self.completed
+
+    def is_failed(self, analysis_id):
+        """Check if analysis previously failed"""
+        return str(analysis_id) in self.failed
+
+    def should_process(self, analysis_id):
+        """Check if we should process this analysis"""
+        aid = str(analysis_id)
+        return aid not in self.completed and aid not in self.failed
+
+    def mark_completed(self, analysis_id):
+        """Mark analysis as completed (thread-safe append)"""
+        with open(self.completed_file, "a") as f:
+            f.write(f"{analysis_id}\n")
+            f.flush()
 
     def mark_failed(self, analysis_id, error=None):
-        """Mark as failed"""
-        self.failed_count += 1
-        logger.error(f"Failed processing {analysis_id}: {error}")
-        # Still save checkpoint so we can continue
-        self.save(analysis_id)
+        """Mark analysis as failed"""
+        with open(self.failed_file, "a") as f:
+            f.write(f"{analysis_id}|{error}\n")
+            f.flush()
 
-    def should_skip(self, analysis_id):
-        """Check if we should skip this analysis (already processed)"""
-        if self.last_processed_id is None:
-            return False
+    def mark_in_progress(self, analysis_id, worker_id):
+        """Mark as being processed by a worker"""
+        with open(self.in_progress_file, "a") as f:
+            f.write(f"{analysis_id}|worker_{worker_id}|{datetime.now().isoformat()}\n")
+            f.flush()
 
-        # This assumes MongoDB _id ordering
-        # If we've seen this ID or newer, skip it
-        return str(analysis_id) <= self.last_processed_id
+    def get_stats(self):
+        """Get processing statistics"""
+        return {"completed": len(self.completed), "failed": len(self.failed)}
 
 
 # =====================
-# 📦 HELPER FUNCTIONS (SIMPLIFIED)
+# 📦 HELPER FUNCTIONS
 # =====================
 
 
@@ -156,7 +178,7 @@ def get_image_hash(image_id):
 
 
 def polygon_to_wkt(geometry, image_width, image_height):
-    """Convert MongoDB polygon to WKT - simplified version"""
+    """Convert MongoDB polygon to WKT"""
     try:
         if not geometry or geometry.get("type") != "Polygon":
             return None
@@ -182,7 +204,7 @@ def polygon_to_wkt(geometry, image_width, image_height):
 
 
 def create_simple_header(g, analysis_doc, batch_num):
-    """Simplified header - just essentials"""
+    """Create simplified header"""
     analysis = analysis_doc["analysis"]
     image = analysis_doc["image"]
     params = analysis["algorithm_params"]
@@ -233,7 +255,7 @@ def create_simple_header(g, analysis_doc, batch_num):
 
 
 def add_mark_simple(g, fc, mark, image_width, image_height, mark_counter):
-    """Simplified mark addition - just essentials"""
+    """Add mark to graph"""
     try:
         # Get geometry
         geometries = mark.get("geometries", {})
@@ -271,65 +293,73 @@ def add_mark_simple(g, fc, mark, image_width, image_height, mark_counter):
         return False
 
 
-def process_one_analysis(db, analysis_doc, checkpoint):
-    """Process a single analysis with minimal memory usage"""
+# =====================
+# 👷 WORKER PROCESS FUNCTION
+# =====================
+def process_analysis_worker(args):
+    """Worker function that processes a single analysis"""
+    worker_id, analysis_doc, checkpoint_dir = args
+
+    # Setup logger for this worker
+    logger = setup_worker_logger(worker_id)
+
+    # Get analysis info
     exec_id = analysis_doc["analysis"]["execution_id"]
     img_id = analysis_doc["image"]["imageid"]
-    analysis_id = analysis_doc["_id"]
+    analysis_id = str(analysis_doc["_id"])
 
-    logger.info(f"Processing {exec_id}:{img_id}")
-
-    # Get marks count first
-    mark_count = db.mark.count_documents(
-        {
-            "provenance.analysis.execution_id": exec_id,
-            "provenance.image.imageid": img_id,
-        }
-    )
-
-    if mark_count == 0:
-        logger.warning(f"No marks found for {exec_id}:{img_id}")
-        checkpoint.mark_processed(analysis_id)
-        return
-
-    logger.info(f"Found {mark_count:,} marks to process")
-
-    # Process in small batches
-    batch_num = 1
-    processed = 0
-    mark_counter = 0
+    logger.info(f"Starting {exec_id}:{img_id}")
 
     try:
-        # Start first batch
-        g = create_graph(
-            {
-                "dc": DC,
-                "exif": EXIF,
-                "geo": GEO,
-                "hal": HAL,
-                "prov": PROV,
-                "rdfs": RDFS,
-                "sno": SNO,
-                "so": SO,
-                "xsd": XSD,
-            }
-        )
-        fc, img_width, img_height = create_simple_header(g, analysis_doc, batch_num)
-        batch_marks = 0
+        # Create new MongoDB connection for this worker
+        with mongo_connection(f"mongodb://{MONGO_HOST}:{MONGO_PORT}/", MONGO_DB) as db:
 
-        # Stream marks with cursor
-        marks_cursor = db.mark.find(
-            {
-                "provenance.analysis.execution_id": exec_id,
-                "provenance.image.imageid": img_id,
-            },
-            no_cursor_timeout=True,
-        ).batch_size(
-            100
-        )  # Small cursor batch size
+            # Get mark count
+            mark_count = db.mark.count_documents(
+                {
+                    "provenance.analysis.execution_id": exec_id,
+                    "provenance.image.imageid": img_id,
+                }
+            )
 
-        try:
-            with tqdm(total=mark_count, desc=str(exec_id), unit=" marks") as pbar:
+            if mark_count == 0:
+                logger.warning(f"No marks found for {exec_id}:{img_id}")
+                return ("completed", analysis_id, 0, 0)
+
+            logger.info(f"Processing {mark_count:,} marks for {exec_id}:{img_id}")
+
+            # Process marks in batches
+            batch_num = 1
+            processed = 0
+            mark_counter = 0
+
+            # Create first batch
+            g = create_graph(
+                {
+                    "dc": DC,
+                    "exif": EXIF,
+                    "geo": GEO,
+                    "hal": HAL,
+                    "prov": PROV,
+                    "rdfs": RDFS,
+                    "sno": SNO,
+                    "so": SO,
+                    "xsd": XSD,
+                }
+            )
+            fc, img_width, img_height = create_simple_header(g, analysis_doc, batch_num)
+            batch_marks = 0
+
+            # Stream marks
+            marks_cursor = db.mark.find(
+                {
+                    "provenance.analysis.execution_id": exec_id,
+                    "provenance.image.imageid": img_id,
+                },
+                no_cursor_timeout=True,
+            ).batch_size(100)
+
+            try:
                 for mark in marks_cursor:
                     mark_counter += 1
 
@@ -338,11 +368,9 @@ def process_one_analysis(db, analysis_doc, checkpoint):
                     ):
                         processed += 1
                         batch_marks += 1
-                        pbar.update(1)
 
                     # Write batch when full
                     if batch_marks >= BATCH_SIZE:
-                        # Write compressed file
                         output_file = (
                             OUTPUT_DIR
                             / exec_id
@@ -359,10 +387,6 @@ def process_one_analysis(db, analysis_doc, checkpoint):
                             compresslevel=GZIP_COMPRESSION_LEVEL,
                         ) as f:
                             f.write(ttl_content)
-
-                        logger.debug(
-                            f"Wrote batch {batch_num} ({batch_marks} marks) - compressed"
-                        )
 
                         # Start new batch
                         batch_num += 1
@@ -406,106 +430,147 @@ def process_one_analysis(db, analysis_doc, checkpoint):
                     ) as f:
                         f.write(ttl_content)
 
-                    logger.debug(
-                        f"Wrote final batch {batch_num} ({batch_marks} marks) - compressed"
-                    )
+            finally:
+                marks_cursor.close()
 
-        finally:
-            marks_cursor.close()
-
-        logger.info(
-            f"✅ Completed {exec_id}:{img_id} - {processed:,} marks in {batch_num} batches"
-        )
-        checkpoint.mark_processed(analysis_id)
-
-        # Force garbage collection
-        gc.collect()
+            logger.info(
+                f"✅ Completed {exec_id}:{img_id} - {processed:,} marks in {batch_num} batches"
+            )
+            return ("completed", analysis_id, processed, batch_num)
 
     except Exception as e:
         logger.error(f"Failed processing {exec_id}:{img_id}: {e}")
-        checkpoint.mark_failed(analysis_id, error=str(e))
-        raise
+        return ("failed", analysis_id, 0, 0, str(e))
 
 
+# =====================
+# 🚀 MAIN PARALLEL CONTROLLER
+# =====================
 def main():
-    """Main function - optimized for 4 billion marks"""
-    logger.info("=" * 60)
-    logger.info("MASSIVE DATASET ETL - Optimized for ~4 billion marks")
-    logger.info("Output: Compressed TTL files (.ttl.gz)")
-    logger.info("Estimated disk usage: ~750GB-1TB (vs 2.5-3TB uncompressed)")
-    logger.info("=" * 60)
+    """Main function - parallel processing with 24 cores"""
+    main_logger.info("=" * 60)
+    main_logger.info(f"PARALLEL ETL - Using {NUM_WORKERS} cores")
+    main_logger.info(f"MongoDB: {MONGO_HOST}:{MONGO_PORT}/{MONGO_DB}")
+    main_logger.info(f"Output: Compressed TTL files (.ttl.gz)")
+    main_logger.info("=" * 60)
 
-    checkpoint = SimpleCheckpoint(CHECKPOINT_FILE)
+    # Initialize checkpoint manager
+    checkpoint = ParallelCheckpointManager(CHECKPOINT_DIR)
+    initial_stats = checkpoint.get_stats()
+    main_logger.info(
+        f"Resuming from checkpoint - Already completed: {initial_stats['completed']}, Failed: {initial_stats['failed']}"
+    )
 
-    with mongo_connection("mongodb://localhost:27018/", "camic") as db:
-        # Get total count
+    # Get list of analyses to process
+    with mongo_connection(f"mongodb://{MONGO_HOST}:{MONGO_PORT}/", MONGO_DB) as db:
         total_analyses = db.analysis.count_documents({})
-        logger.info(f"Found {total_analyses:,} analyses to process")
+        main_logger.info(f"Found {total_analyses:,} total analyses in database")
 
-        # Estimate total marks (for user info)
-        sample_size = min(10, total_analyses)
-        if sample_size > 0:
-            sample_marks = []
-            for doc in db.analysis.find().limit(sample_size):
-                count = db.mark.count_documents(
-                    {
-                        "provenance.analysis.execution_id": doc["analysis"][
-                            "execution_id"
-                        ],
-                        "provenance.image.imageid": doc["image"]["imageid"],
-                    }
-                )
-                sample_marks.append(count)
+        # Get IDs of analyses to process
+        analyses_to_process = []
+        for doc in db.analysis.find(
+            {}, {"_id": 1, "analysis.execution_id": 1, "image.imageid": 1}
+        ):
+            if checkpoint.should_process(str(doc["_id"])):
+                analyses_to_process.append(doc["_id"])
 
-            if sample_marks:
-                avg_marks = sum(sample_marks) / len(sample_marks)
-                estimated_total = int(avg_marks * total_analyses)
-                logger.info(f"Estimated total marks: ~{estimated_total:,}")
+        main_logger.info(f"Need to process {len(analyses_to_process):,} analyses")
 
-        # Process analyses one at a time
-        processed = 0
-        skipped = 0
+        if not analyses_to_process:
+            main_logger.info("Nothing to process!")
+            return
 
-        # Use cursor to avoid loading all analyses into memory
-        analysis_cursor = db.analysis.find().sort(
-            "_id", 1
-        )  # Sort by ID for consistent ordering
+        # Process in chunks to avoid loading all documents at once
+        chunk_size = NUM_WORKERS * 10  # Process 10 rounds of work at a time
+        total_processed = 0
+        total_marks = 0
+        start_time = time.time()
 
-        try:
-            for analysis_doc in analysis_cursor:
-                analysis_id = analysis_doc["_id"]
+        # Create process pool
+        with Pool(processes=NUM_WORKERS) as pool:
+            try:
+                for chunk_start in range(0, len(analyses_to_process), chunk_size):
+                    chunk_ids = analyses_to_process[
+                        chunk_start : chunk_start + chunk_size
+                    ]
 
-                # Skip if already processed
-                if checkpoint.should_skip(analysis_id):
-                    skipped += 1
-                    if skipped % 100 == 0:
-                        logger.info(f"Skipped {skipped} already-processed analyses...")
-                    continue
+                    # Fetch full documents for this chunk
+                    chunk_docs = []
+                    for analysis_doc in db.analysis.find({"_id": {"$in": chunk_ids}}):
+                        chunk_docs.append(analysis_doc)
 
-                # Process this analysis
-                try:
-                    process_one_analysis(db, analysis_doc, checkpoint)
-                    processed += 1
+                    if not chunk_docs:
+                        continue
 
-                    # Memory cleanup every 10 analyses
-                    if processed % 10 == 0:
-                        gc.collect()
+                    main_logger.info(
+                        f"Processing chunk {chunk_start//chunk_size + 1} ({len(chunk_docs)} analyses)"
+                    )
 
-                except KeyboardInterrupt:
-                    logger.warning("⚠️ Interrupted by user - checkpoint saved")
-                    break
-                except Exception as e:
-                    logger.error(f"Error processing analysis: {e}")
-                    continue
+                    # Prepare worker arguments
+                    worker_args = []
+                    for i, doc in enumerate(chunk_docs):
+                        worker_id = i % NUM_WORKERS
+                        worker_args.append((worker_id, doc, CHECKPOINT_DIR))
 
-        finally:
-            analysis_cursor.close()
+                    # Process in parallel
+                    results = pool.map(process_analysis_worker, worker_args)
 
-    logger.info("=" * 60)
-    logger.info(f"ETL Complete! Processed {checkpoint.processed_count:,} analyses")
-    logger.info(f"Failed: {checkpoint.failed_count:,}")
-    logger.info("=" * 60)
+                    # Process results
+                    for result in results:
+                        if result[0] == "completed":
+                            status, analysis_id, mark_count, batch_count = result[:4]
+                            checkpoint.mark_completed(analysis_id)
+                            total_processed += 1
+                            total_marks += mark_count
+                        elif result[0] == "failed":
+                            status, analysis_id, _, _, error = result
+                            checkpoint.mark_failed(analysis_id, error)
+
+                    # Progress report
+                    elapsed = time.time() - start_time
+                    rate = total_marks / elapsed if elapsed > 0 else 0
+                    eta_hours = (
+                        (len(analyses_to_process) - total_processed)
+                        * (elapsed / total_processed)
+                        / 3600
+                        if total_processed > 0
+                        else 0
+                    )
+
+                    main_logger.info(
+                        f"""
+Progress Report:
+  Processed: {total_processed:,} / {len(analyses_to_process):,} analyses
+  Total marks: {total_marks:,}
+  Rate: {rate:.0f} marks/sec
+  Estimated time remaining: {eta_hours:.1f} hours
+"""
+                    )
+
+            except KeyboardInterrupt:
+                main_logger.warning("⚠️ Interrupted by user - checkpoint saved")
+                pool.terminate()
+                pool.join()
+
+    # Final statistics
+    final_stats = checkpoint.get_stats()
+    elapsed_hours = (time.time() - start_time) / 3600
+
+    main_logger.info("=" * 60)
+    main_logger.info(
+        f"""
+ETL Complete!
+  Total completed: {final_stats['completed']:,}
+  Total failed: {final_stats['failed']:,}
+  Total marks processed: {total_marks:,}
+  Time elapsed: {elapsed_hours:.2f} hours
+  Average rate: {total_marks/(elapsed_hours*3600):.0f} marks/sec
+"""
+    )
+    main_logger.info("=" * 60)
 
 
 if __name__ == "__main__":
+    # Handle Ctrl+C gracefully
+    signal.signal(signal.SIGINT, signal.default_int_handler)
     main()
