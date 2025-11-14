@@ -569,7 +569,7 @@ def main():
                     # Fetch full documents for this chunk
                     chunk_docs = []
                     for analysis_doc in db.analysis.find({"_id": {"$in": chunk_ids}}):
-                    chunk_docs.append(analysis_doc)
+                        chunk_docs.append(analysis_doc)
 
                     if not chunk_docs:
                         continue
