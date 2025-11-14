@@ -23,10 +23,11 @@ uv.lock
 .mypy_cache/
 
 # Misc
-*.csv
 nuclear_segmentation_data/
 nuclear_geosparql_output/
 geojson_files/
 geosparql_output/
+ttl_output/
 .claude/
 *.log
+*.csv
