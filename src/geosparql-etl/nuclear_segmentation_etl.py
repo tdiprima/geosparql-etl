@@ -53,8 +53,7 @@ def parse_polygon_to_wkt(polygon_string):
         return None
 
     # Remove brackets and split by colons
-    coords_str = polygon_string.strip("[]")
-    coords = coords_str.split(":")
+    coords = polygon_string.strip("[]").split(":")
 
     # Parse coordinate pairs
     wkt_coords = []
@@ -88,7 +87,9 @@ def extract_image_info_from_filename(filename):
     parts = name.split("_")
 
     if len(parts) >= 4:
-        try:
+        from contextlib import suppress
+
+        with suppress(ValueError):
             info = {
                 "x": int(parts[0]),
                 "y": int(parts[1]),
@@ -97,8 +98,6 @@ def extract_image_info_from_filename(filename):
                 "base_name": name,
             }
             return info
-        except ValueError:
-            pass
 
     # Fallback - use filename as base name
     return {

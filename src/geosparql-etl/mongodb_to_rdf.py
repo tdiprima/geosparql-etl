@@ -107,10 +107,9 @@ class SimpleCheckpoint:
     def save(self, analysis_id):
         """Save checkpoint with just the last processed ID"""
         self.last_processed_id = str(analysis_id)
-        with open(self.checkpoint_file, "w") as f:
-            f.write(
-                f"{self.last_processed_id}|{self.processed_count}|{self.failed_count}\n"
-            )
+        self.checkpoint_file.write_text(
+            f"{self.last_processed_id}|{self.processed_count}|{self.failed_count}\n"
+        )
 
     def mark_processed(self, analysis_id):
         """Mark as processed and save immediately"""
@@ -324,7 +323,7 @@ def process_one_analysis(db, analysis_doc, checkpoint):
         )  # Small cursor batch size
 
         try:
-            with tqdm(total=mark_count, desc=f"{exec_id}", unit=" marks") as pbar:
+            with tqdm(total=mark_count, desc=str(exec_id), unit=" marks") as pbar:
                 for mark in marks_cursor:
                     mark_counter += 1
 
