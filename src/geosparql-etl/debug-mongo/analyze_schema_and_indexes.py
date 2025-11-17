@@ -1,7 +1,6 @@
 """
 Schema analysis and index recommendation script - FAST VERSION
 Only uses indexed queries - safe for huge databases
-Author: Assistant
 """
 
 import logging
@@ -35,11 +34,11 @@ def analyze_schema_fast():
     with mongo_connection(f"mongodb://{MONGO_HOST}:{MONGO_PORT}/", MONGO_DB) as db:
 
         # 1. Get total counts (fast - just metadata)
-        logger.info("\n1. Collection Statistics:")
-        total_marks = db.mark.count_documents({})
-        total_analyses = db.analysis.count_documents({})
-        logger.info(f"Total marks: {total_marks:,}")
-        logger.info(f"Total analyses: {total_analyses:,}")
+        # logger.info("\n1. Collection Statistics:")
+        # total_marks = db.mark.count_documents({})
+        # total_analyses = db.analysis.count_documents({})
+        # logger.info(f"Total marks: {total_marks:,}")
+        # logger.info(f"Total analyses: {total_analyses:,}")
 
         # 2. Sample a few marks to understand structure (fast - only 10 docs)
         logger.info("\n2. Sampling Mark Structure (10 samples):")
