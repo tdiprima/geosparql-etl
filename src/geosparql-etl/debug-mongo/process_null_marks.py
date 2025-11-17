@@ -1,7 +1,11 @@
 """
-Process marks with null or empty analysis_id
-PARALLELIZED VERSION for multi-core machines
-Author: Assistant
+Process marks with null or empty execution_id
+CORRECTED for actual schema (uses provenance.analysis.execution_id)
+
+NOTE: Based on schema analysis, your database has NO analysis_id field.
+All marks use provenance.analysis.execution_id instead.
+
+This script processes marks that have null/missing execution_id values.
 """
 
 import gzip
@@ -9,7 +13,7 @@ import logging
 import sys
 import time
 from datetime import datetime, timezone
-from multiprocessing import Pool, cpu_count
+from multiprocessing import Pool
 from pathlib import Path
 
 # Add parent directory to path to import utils
@@ -43,11 +47,50 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def check_if_needed():
+    """Check if there are actually any marks with null/missing execution_id"""
+
+    logger.info("=" * 60)
+    logger.info("NULL/MISSING EXECUTION_ID CHECK")
+    logger.info("=" * 60)
+
+    with mongo_connection(f"mongodb://{MONGO_HOST}:{MONGO_PORT}/", MONGO_DB) as db:
+
+        # Check for marks without execution_id field
+        logger.info("Checking for marks without execution_id field...")
+
+        # Sample to see if any exist
+        sample_missing = db.mark.find_one(
+            {"provenance.analysis.execution_id": {"$exists": False}}
+        )
+
+        sample_null = db.mark.find_one({"provenance.analysis.execution_id": None})
+
+        sample_empty = db.mark.find_one({"provenance.analysis.execution_id": ""})
+
+        if not sample_missing and not sample_null and not sample_empty:
+            logger.info("✅ All marks have valid execution_id values!")
+            logger.info("   No null/missing marks to process.")
+            logger.info("   This script is not needed for your database.")
+            return False
+
+        logger.info("⚠️  Found marks with null/missing execution_id")
+
+        if sample_missing:
+            logger.info("  - Some marks missing execution_id field entirely")
+        if sample_null:
+            logger.info("  - Some marks have execution_id = null")
+        if sample_empty:
+            logger.info("  - Some marks have execution_id = empty string")
+
+        return True
+
+
 def create_null_marks_ttl_header(batch_num, mark_type):
-    """Create TTL header for null/empty analysis_id marks"""
+    """Create TTL header for null/empty execution_id marks"""
     timestamp = datetime.now(tz=timezone.utc).isoformat()
 
-    ttl = f"""# Marks with {mark_type} analysis_id
+    ttl = f"""# Marks with {mark_type} execution_id
 # Generated: {timestamp}
 # Batch: {batch_num}
 
@@ -57,7 +100,7 @@ def create_null_marks_ttl_header(batch_num, mark_type):
 @prefix prov: <http://www.w3.org/ns/prov#> .
 @prefix camic: <https://grlc.io/api/MathurMihir/camic-apis/> .
 
-# Collection of marks without analysis_id
+# Collection of marks without execution_id
 <https://grlc.io/api/MathurMihir/camic-apis/{mark_type}_marks/batch_{batch_num}>
     a geo:FeatureCollection ;
     prov:generatedAtTime "{timestamp}"^^xsd:dateTime ;
@@ -92,21 +135,14 @@ def polygon_to_wkt(geometry, default_width=40000, default_height=40000):
 
 def get_id_range_query(query_base, range_start, range_end):
     """Create query for a specific _id range"""
-    # MongoDB ObjectIds are strings that can be compared lexicographically
     query = dict(query_base)
     query["_id"] = {"$gte": range_start, "$lt": range_end}
     return query
 
 
 def create_id_ranges(num_ranges):
-    """
-    Create _id ranges to partition the collection
-    ObjectIds are 24-char hex strings, we can partition by first char
-    """
-    # Hex chars: 0-9, a-f (16 chars)
+    """Create _id ranges to partition the collection"""
     hex_chars = "0123456789abcdef"
-
-    # Create ranges based on first character of _id
     ranges = []
     chars_per_range = max(1, len(hex_chars) // num_ranges)
 
@@ -114,7 +150,6 @@ def create_id_ranges(num_ranges):
         start_char = hex_chars[i]
         end_char = hex_chars[min(i + chars_per_range, len(hex_chars) - 1)]
 
-        # ObjectIds are 24 chars long
         range_start = start_char + "0" * 23
         range_end = end_char + "f" * 23
 
@@ -123,7 +158,6 @@ def create_id_ranges(num_ranges):
         if len(ranges) >= num_ranges:
             break
 
-    # Ensure we cover the full range
     if ranges:
         ranges[-1] = (ranges[-1][0], "f" * 24)
 
@@ -139,15 +173,6 @@ def process_mark_range(args):
         with mongo_connection(f"mongodb://{MONGO_HOST}:{MONGO_PORT}/", MONGO_DB) as db:
             # Create query for this range
             query = get_id_range_query(query_base, range_start, range_end)
-
-            # Count marks in this range
-            mark_count = db.mark.count_documents(query)
-            logger.info(
-                f"Worker {worker_id}: Processing {mark_count:,} {mark_type} marks in range {range_start[:4]}...{range_end[:4]}"
-            )
-
-            if mark_count == 0:
-                return ("empty", worker_id, 0)
 
             # Process marks
             marks_cursor = db.mark.find(query, batch_size=BATCH_SIZE * 2)
@@ -187,10 +212,6 @@ def process_mark_range(args):
                     # Write batch when full
                     if len(batch_marks) >= BATCH_SIZE:
                         write_batch(batch_marks, mark_type, worker_id, batch_num)
-                        logger.info(
-                            f"Worker {worker_id}: Wrote batch {batch_num}: {len(batch_marks)} marks"
-                        )
-
                         batch_num += 1
                         batch_marks = []
 
@@ -202,15 +223,14 @@ def process_mark_range(args):
             # Write final batch
             if batch_marks:
                 write_batch(batch_marks, mark_type, worker_id, batch_num)
-                logger.info(
-                    f"Worker {worker_id}: Wrote final batch {batch_num}: {len(batch_marks)} marks"
-                )
 
             marks_cursor.close()
 
-            logger.info(
-                f"Worker {worker_id}: Completed - {valid_marks:,} valid marks from {processed:,} total"
-            )
+            if valid_marks > 0:
+                logger.info(
+                    f"Worker {worker_id}: Completed - {valid_marks:,} valid marks"
+                )
+
             return ("completed", worker_id, valid_marks)
 
     except Exception as e:
@@ -221,7 +241,6 @@ def process_mark_range(args):
 def write_batch(batch_marks, mark_type, worker_id, batch_num):
     """Write a batch of marks to TTL file"""
 
-    # Create TTL content
     ttl_content = create_null_marks_ttl_header(f"{worker_id}_{batch_num}", mark_type)
 
     for i, (mark_id, wkt, classification) in enumerate(batch_marks):
@@ -243,7 +262,6 @@ def write_batch(batch_marks, mark_type, worker_id, batch_num):
 
     ttl_content += " .\n"
 
-    # Write file
     output_file = (
         OUTPUT_DIR / mark_type / f"batch_{worker_id:02d}_{batch_num:06d}.ttl.gz"
     )
@@ -256,91 +274,70 @@ def write_batch(batch_marks, mark_type, worker_id, batch_num):
 
 
 def process_null_marks_parallel():
-    """Process all marks with null or empty analysis_id in parallel"""
+    """Process all marks with null or empty execution_id in parallel"""
 
     logger.info("=" * 60)
-    logger.info("NULL/EMPTY ANALYSIS_ID MARKS PROCESSING (PARALLEL)")
+    logger.info("NULL/EMPTY EXECUTION_ID MARKS PROCESSING")
     logger.info("=" * 60)
     logger.info(f"Using {NUM_WORKERS} worker processes")
-    logger.info(f"Available CPU cores: {cpu_count()}")
 
-    with mongo_connection(f"mongodb://{MONGO_HOST}:{MONGO_PORT}/", MONGO_DB) as db:
-        # Count null and empty marks
-        null_count = db.mark.count_documents({"analysis_id": None})
-        empty_count = db.mark.count_documents({"analysis_id": ""})
-        total_to_process = null_count + empty_count
-
-        logger.info(f"Marks with null analysis_id: {null_count:,}")
-        logger.info(f"Marks with empty analysis_id: {empty_count:,}")
-        logger.info(f"Total to process: {total_to_process:,}")
-
-        if total_to_process == 0:
-            logger.info("No null/empty marks to process!")
-            return
+    # First check if this script is even needed
+    if not check_if_needed():
+        logger.info("\n✅ Script completed - nothing to process")
+        return
 
     start_time = time.time()
-
-    # Create ID ranges for parallel processing
     id_ranges = create_id_ranges(NUM_WORKERS)
-    logger.info(f"Created {len(id_ranges)} ID ranges for parallel processing")
 
-    # Process null marks
     total_marks = 0
-    if null_count > 0:
-        logger.info("\nProcessing null analysis_id marks in parallel...")
 
-        # Create work items
-        work_items = [
-            ({"analysis_id": None}, start, end, "null", i)
-            for i, (start, end) in enumerate(id_ranges)
-        ]
+    # Process marks missing execution_id field
+    logger.info("\nProcessing marks missing execution_id field...")
+    work_items = [
+        (
+            {"provenance.analysis.execution_id": {"$exists": False}},
+            start,
+            end,
+            "missing",
+            i,
+        )
+        for i, (start, end) in enumerate(id_ranges)
+    ]
 
-        with Pool(processes=NUM_WORKERS) as pool:
-            for result in pool.imap_unordered(process_mark_range, work_items):
-                status = result[0]
-                worker_id = result[1]
+    with Pool(processes=NUM_WORKERS) as pool:
+        for result in pool.imap_unordered(process_mark_range, work_items):
+            if result[0] == "completed":
+                total_marks += result[2]
 
-                if status == "completed":
-                    mark_count = result[2]
-                    total_marks += mark_count
-                    logger.info(
-                        f"Worker {worker_id} completed: {mark_count:,} null marks"
-                    )
-                elif status == "failed":
-                    error = result[3] if len(result) > 3 else "Unknown"
-                    logger.error(f"Worker {worker_id} failed: {error}")
+    # Process null execution_id
+    logger.info("\nProcessing marks with null execution_id...")
+    work_items = [
+        ({"provenance.analysis.execution_id": None}, start, end, "null", i)
+        for i, (start, end) in enumerate(id_ranges)
+    ]
 
-    # Process empty marks
-    if empty_count > 0:
-        logger.info("\nProcessing empty analysis_id marks in parallel...")
+    with Pool(processes=NUM_WORKERS) as pool:
+        for result in pool.imap_unordered(process_mark_range, work_items):
+            if result[0] == "completed":
+                total_marks += result[2]
 
-        work_items = [
-            ({"analysis_id": ""}, start, end, "empty", i)
-            for i, (start, end) in enumerate(id_ranges)
-        ]
+    # Process empty execution_id
+    logger.info("\nProcessing marks with empty execution_id...")
+    work_items = [
+        ({"provenance.analysis.execution_id": ""}, start, end, "empty", i)
+        for i, (start, end) in enumerate(id_ranges)
+    ]
 
-        with Pool(processes=NUM_WORKERS) as pool:
-            for result in pool.imap_unordered(process_mark_range, work_items):
-                status = result[0]
-                worker_id = result[1]
-
-                if status == "completed":
-                    mark_count = result[2]
-                    total_marks += mark_count
-                    logger.info(
-                        f"Worker {worker_id} completed: {mark_count:,} empty marks"
-                    )
-                elif status == "failed":
-                    error = result[3] if len(result) > 3 else "Unknown"
-                    logger.error(f"Worker {worker_id} failed: {error}")
+    with Pool(processes=NUM_WORKERS) as pool:
+        for result in pool.imap_unordered(process_mark_range, work_items):
+            if result[0] == "completed":
+                total_marks += result[2]
 
     elapsed = time.time() - start_time
     logger.info("=" * 60)
     logger.info("Processing complete!")
     logger.info(f"Total marks processed: {total_marks:,}")
     logger.info(f"Time elapsed: {elapsed/60:.2f} minutes")
-    logger.info(f"Average rate: {total_marks/elapsed:.0f} marks/sec")
-    logger.info(f"Workers used: {NUM_WORKERS}")
     logger.info("=" * 60)
 
 
