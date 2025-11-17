@@ -45,7 +45,7 @@ MONGO_DB = "camic"
 OUTPUT_DIR.mkdir(exist_ok=True)
 CHECKPOINT_DIR.mkdir(exist_ok=True)
 
-# SNOMED code for nuclear material
+# SNOMED code for nuclear material (only hard-coded value as requested)
 NUCLEAR_MATERIAL_SNOMED = "http://snomed.info/id/68841002"
 
 
@@ -308,23 +308,34 @@ def create_ttl_header(analysis_doc, batch_num):
         a                    prov:Activity ;
         prov:used            <urn:sha256:{image_hash}> ;"""
 
-    # Add algorithm parameters as the plan
+    # Add ALL algorithm parameters as individual properties
     if params:
-        # Select key parameters to include
-        key_params = []
-        if "mpp" in params:
-            key_params.append(f'mpp={params["mpp"]}')
-        if "min_size" in params:
-            key_params.append(f'min_size={params["min_size"]}')
-        if "max_size" in params:
-            key_params.append(f'max_size={params["max_size"]}')
-        if "output_level" in params:
-            key_params.append(f'output_level={params["output_level"]}')
+        # Add each parameter with appropriate data typing
+        for param_key, param_value in params.items():
+            # Skip redundant params already captured elsewhere
+            if param_key in ["image_width", "image_height", "case_id", "subject_id"]:
+                continue
 
-        if key_params:
-            plan_description = f"{computation} algorithm ({', '.join(key_params)})"
-            ttl_content += f"""
-        prov:hadPlan         "{plan_description}" ;"""
+            # Create a safe property name
+            safe_key = param_key.replace("_", "")
+
+            # Determine the data type and format value appropriately
+            if param_value is None or param_value == "":
+                continue
+            elif isinstance(param_value, bool):
+                ttl_content += f"""
+        hal:{safe_key}       "{str(param_value).lower()}"^^xsd:boolean ;"""
+            elif isinstance(param_value, int):
+                ttl_content += f"""
+        hal:{safe_key}       "{param_value}"^^xsd:int ;"""
+            elif isinstance(param_value, float):
+                ttl_content += f"""
+        hal:{safe_key}       "{param_value}"^^xsd:float ;"""
+            else:
+                # String or other type - escape quotes in the value
+                escaped_value = str(param_value).replace('"', '\\"')
+                ttl_content += f"""
+        hal:{safe_key}       "{escaped_value}" ;"""
 
     # Add start time if available
     if submit_timestamp:
