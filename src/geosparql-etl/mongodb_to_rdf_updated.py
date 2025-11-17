@@ -45,7 +45,7 @@ MONGO_DB = "camic"
 OUTPUT_DIR.mkdir(exist_ok=True)
 CHECKPOINT_DIR.mkdir(exist_ok=True)
 
-# SNOMED code for nuclear material (only hard-coded value as requested)
+# SNOMED code for nuclear material
 NUCLEAR_MATERIAL_SNOMED = "http://snomed.info/id/68841002"
 
 
