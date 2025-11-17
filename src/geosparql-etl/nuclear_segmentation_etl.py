@@ -2,6 +2,11 @@
 ETL script to convert nuclear segmentation CSV files to GeoSPARQL format
 with SNOMED URIs for nuclear material classification.
 
+VERSION 2 CHANGES:
+- Removed redundant hal:classification from measurement nodes
+- For single-class scenarios (nuclear segmentation), only the feature gets classification
+- Measurements only contain hal:hasProbability (no classification needed)
+
 Processes CSV files from nuclear segmentation results with polygon coordinates
 and converts them to Turtle/RDF format with GeoSPARQL geometries.
 
@@ -251,9 +256,7 @@ def create_geosparql_ttl(csv_path, image_name, image_hash=None, cancer_type=None
             ttl_content += f"""        rdfs:member          [ a                   geo:Feature;
                                geo:hasGeometry     [ geo:asWKT  "{wkt}" ];
                                hal:classification  sno:{snomed_id};
-                               hal:measurement     [ hal:classification  sno:{snomed_id};
-                                                     hal:hasProbability  "1.0"^^xsd:float
-                                                   ]"""
+                               hal:measurement     [ hal:hasProbability  "1.0"^^xsd:float ]"""
 
             # Optionally include area information as additional properties
             if area_pixels:
@@ -264,7 +267,9 @@ def create_geosparql_ttl(csv_path, image_name, image_hash=None, cancer_type=None
                 ttl_content += f""";
                                hal:physicalSize    "{physical_size}"^^xsd:float"""
 
-            ttl_content += "\n                             ]"
+            # Close the feature
+            ttl_content += """
+                             ]"""
             feature_count += 1
 
     # Close the feature collection with proper terminator

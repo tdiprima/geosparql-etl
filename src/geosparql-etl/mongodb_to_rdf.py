@@ -21,10 +21,7 @@ from pathlib import Path
 # Add parent directory to path to import utils
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from rdflib import Literal, Namespace, URIRef
-from rdflib.namespace import RDF, RDFS, XSD
-
-from utils import GEO, PROV, create_graph, mongo_connection
+from utils import mongo_connection
 
 # =====================
 # 📧 CONFIG - OPTIMIZED FOR PARALLEL PROCESSING
@@ -50,15 +47,7 @@ MONGO_DB = "camic"
 OUTPUT_DIR.mkdir(exist_ok=True)
 CHECKPOINT_DIR.mkdir(exist_ok=True)
 
-# =====================
-# 🌐 NAMESPACES
-# =====================
-HAL = Namespace("https://halcyon.is/ns/")
-EXIF = Namespace("http://www.w3.org/2003/12/exif/ns#")
-DC = Namespace("http://purl.org/dc/terms/")
-SO = Namespace("https://schema.org/")
-SNO = Namespace("http://snomed.info/id/")
-
+# SNOMED code for nuclear material
 NUCLEAR_MATERIAL_SNOMED = "http://snomed.info/id/68841002"
 
 
@@ -218,8 +207,8 @@ def polygon_to_wkt(geometry, image_width, image_height):
         return None
 
 
-def create_simple_header(g, analysis_doc, batch_num):
-    """Create simplified header"""
+def create_ttl_header(analysis_doc, batch_num):
+    """Create TTL header as string (manual building for clean output)"""
     analysis = analysis_doc["analysis"]
     image = analysis_doc["image"]
     params = analysis["algorithm_params"]
@@ -231,81 +220,113 @@ def create_simple_header(g, analysis_doc, batch_num):
     # Image hash
     image_hash = get_image_hash(image["imageid"])
     case_id = params.get("case_id", image["imageid"])
+    
+    # Extract cancer type if available
+    cancer_type = params.get("cancer_type") or image.get("study")
+    
+    timestamp = datetime.now(tz=timezone.utc).isoformat()
 
-    # Image object
-    image_uri = URIRef(f"urn:sha256:{image_hash}")
-    g.add((image_uri, RDF.type, SO.ImageObject))
-    g.add((image_uri, DC.identifier, Literal(case_id)))
-    g.add((image_uri, EXIF.width, Literal(image_width, datatype=XSD.integer)))
-    g.add((image_uri, EXIF.height, Literal(image_height, datatype=XSD.integer)))
+    # TTL header with prefixes
+    ttl_content = """@prefix dc:   <http://purl.org/dc/terms/> .
+@prefix exif: <http://www.w3.org/2003/12/exif/ns#> .
+@prefix geo:  <http://www.opengis.net/ont/geosparql#> .
+@prefix hal:  <https://halcyon.is/ns/> .
+@prefix prov: <http://www.w3.org/ns/prov#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix sno:  <http://snomed.info/id/> .
+@prefix so:   <https://schema.org/> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
 
-    # FeatureCollection with <>
-    fc = URIRef("")
-    g.add((fc, RDF.type, GEO.FeatureCollection))
-    g.add((fc, DC.creator, Literal("http://orcid.org/0000-0003-4165-4062")))
-    g.add(
-        (
-            fc,
-            DC.date,
-            Literal(datetime.now(tz=timezone.utc).isoformat(), datatype=XSD.dateTime),
-        )
-    )
-    g.add(
-        (
-            fc,
-            DC.description,
-            Literal(f"Nuclear segmentation for {case_id} batch {batch_num}"),
-        )
-    )
-    g.add((fc, DC.title, Literal("nuclear-segmentation-predictions")))
-    g.add((fc, HAL.executionId, Literal(analysis["execution_id"])))
+"""
 
-    # Provenance
-    prov_node = URIRef(f"_:prov_{batch_num}")
-    g.add((fc, PROV.wasGeneratedBy, prov_node))
-    g.add((prov_node, RDF.type, PROV.Activity))
-    g.add((prov_node, PROV.used, image_uri))
+    # Add image object
+    ttl_content += f"""<urn:sha256:{image_hash}>
+        a            so:ImageObject;
+        dc:identifier "{case_id}";
+        exif:height  "{image_height}"^^xsd:int;
+        exif:width   "{image_width}"^^xsd:int .
 
-    return fc, image_width, image_height
+"""
+
+    # Start feature collection with <> as the subject (self-reference)
+    ttl_content += f"""<>      a                    geo:FeatureCollection;
+        dc:creator           "http://orcid.org/0000-0003-4165-4062";
+        dc:date              "{timestamp}"^^xsd:dateTime;
+        dc:description       "Nuclear segmentation for {case_id} batch {batch_num}";
+        dc:publisher         <https://ror.org/01882y777> , <https://ror.org/05qghxh33>;
+        dc:references        "https://doi.org/10.1038/s41597-020-0528-1";
+        dc:title             "nuclear-segmentation-predictions";"""
+    
+    # Add execution ID
+    ttl_content += f"""
+        hal:executionId      "{analysis['execution_id']}";"""
+    
+    # Add cancer type if available
+    if cancer_type:
+        ttl_content += f"""
+        hal:cancerType       "{cancer_type}";"""
+    
+    # Add provenance
+    ttl_content += f"""
+        prov:wasGeneratedBy  [ a                       prov:Activity;
+                               prov:used               <urn:sha256:{image_hash}>;
+                               prov:wasAssociatedWith  <https://github.com/nuclear-segmentation-model>
+                             ];
+"""
+
+    return ttl_content, image_width, image_height
 
 
-def add_mark_simple(g, fc, mark, image_width, image_height, mark_counter):
-    """Add mark to graph"""
+def add_mark_to_ttl(mark, image_width, image_height, is_first_feature):
+    """Add mark to TTL string (manual building for clean inline blank nodes)"""
     try:
         # Get geometry
         geometries = mark.get("geometries", {})
         features = geometries.get("features", [])
         if not features:
-            return False
+            return "", False
 
         geometry = features[0].get("geometry", {})
         wkt = polygon_to_wkt(geometry, image_width, image_height)
         if not wkt:
-            return False
+            return "", False
 
-        # Create feature
-        feature_node = URIRef(f"_:f{mark_counter}")
-        g.add((fc, RDFS.member, feature_node))
-        g.add((feature_node, RDF.type, GEO.Feature))
-
-        # Geometry
-        geom_node = URIRef(f"_:g{mark_counter}")
-        g.add((feature_node, GEO.hasGeometry, geom_node))
-        g.add((geom_node, GEO.asWKT, Literal(wkt, datatype=GEO.wktLiteral)))
-
-        # Classification
+        # Get properties
+        properties = features[0].get("properties", {})
+        
+        # Build feature TTL
+        feature_ttl = ""
+        
+        # Add separator for multiple features
+        if not is_first_feature:
+            feature_ttl += ";\n"
+        
+        # Start feature with inline blank node
         snomed_id = "68841002"
-        g.add((feature_node, HAL.classification, SNO[snomed_id]))
-
-        # Measurement
-        meas_node = URIRef(f"_:m{mark_counter}")
-        g.add((feature_node, HAL.measurement, meas_node))
-        g.add((meas_node, HAL.classification, SNO[snomed_id]))
-        g.add((meas_node, HAL.hasProbability, Literal(1.0, datatype=XSD.float)))
-
-        return True
-    except:
-        return False
+        feature_ttl += f"""        rdfs:member          [ a                   geo:Feature;
+                               geo:hasGeometry     [ geo:asWKT  "{wkt}" ];
+                               hal:classification  sno:{snomed_id}"""
+        
+        # Add optional properties
+        if "AreaInPixels" in properties:
+            area_pixels = properties["AreaInPixels"]
+            feature_ttl += f""";
+                               hal:areaInPixels    "{int(area_pixels)}"^^xsd:int"""
+        
+        if "PhysicalSize" in properties:
+            physical_size = properties["PhysicalSize"]
+            feature_ttl += f""";
+                               hal:physicalSize    "{float(physical_size):.6f}"^^xsd:float"""
+        
+        # Add measurement WITHOUT classification (single-class scenario)
+        feature_ttl += f""";
+                               hal:measurement     [ hal:hasProbability  "1.0"^^xsd:float ]
+                             ]"""
+        
+        return feature_ttl, True
+        
+    except Exception:
+        return "", False
 
 
 # =====================
@@ -376,27 +397,19 @@ def process_analysis_worker(args):
             batch_marks = 0        # marks in current TTL batch
             batch_num = 1
 
-            # Initial graph / header
-            g = create_graph(
-                {
-                    "dc": DC,
-                    "exif": EXIF,
-                    "geo": GEO,
-                    "hal": HAL,
-                    "prov": PROV,
-                    "rdfs": RDFS,
-                    "sno": SNO,
-                    "so": SO,
-                    "xsd": XSD,
-                }
-            )
-            fc, img_width, img_height = create_simple_header(g, analysis_doc, batch_num)
+            # Start TTL content with header (manual string building)
+            ttl_content, img_width, img_height = create_ttl_header(analysis_doc, batch_num)
+            is_first_feature = True
 
             try:
                 for mark in marks_cursor:
                     mark_counter += 1
 
-                    if add_mark_simple(g, fc, mark, img_width, img_height, mark_counter):
+                    # Add mark to TTL string
+                    feature_ttl, success = add_mark_to_ttl(mark, img_width, img_height, is_first_feature)
+                    if success:
+                        ttl_content += feature_ttl
+                        is_first_feature = False
                         processed += 1
                         batch_marks += 1
 
@@ -413,12 +426,14 @@ def process_analysis_worker(args):
 
                     # When batch is full, flush TTL
                     if batch_marks >= BATCH_SIZE:
+                        # Close the feature collection
+                        ttl_content += " .\n"
+                        
                         output_file = (
                             OUTPUT_DIR / str(exec_id) / str(img_id) / f"batch_{batch_num:06d}.ttl.gz"
                         )
                         output_file.parent.mkdir(parents=True, exist_ok=True)
 
-                        ttl_content = g.serialize(format="turtle")
                         with gzip.open(
                             output_file,
                             "wt",
@@ -440,35 +455,20 @@ def process_analysis_worker(args):
                         batch_num += 1
                         batch_marks = 0
 
-                        # Reset graph to free memory
-                        del g
-                        gc.collect()
-
-                        g = create_graph(
-                            {
-                                "dc": DC,
-                                "exif": EXIF,
-                                "geo": GEO,
-                                "hal": HAL,
-                                "prov": PROV,
-                                "rdfs": RDFS,
-                                "sno": SNO,
-                                "so": SO,
-                                "xsd": XSD,
-                            }
-                        )
-                        fc, img_width, img_height = create_simple_header(
-                            g, analysis_doc, batch_num
-                        )
+                        # Start new TTL content with new header
+                        ttl_content, img_width, img_height = create_ttl_header(analysis_doc, batch_num)
+                        is_first_feature = True
 
                 # After loop: flush any remaining marks
                 if batch_marks > 0:
+                    # Close the feature collection
+                    ttl_content += " .\n"
+                    
                     output_file = (
                         OUTPUT_DIR / str(exec_id) / str(img_id) / f"batch_{batch_num:06d}.ttl.gz"
                     )
                     output_file.parent.mkdir(parents=True, exist_ok=True)
 
-                    ttl_content = g.serialize(format="turtle")
                     with gzip.open(
                         output_file,
                         "wt",

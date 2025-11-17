@@ -1,7 +1,6 @@
 """
 Process marks with null or empty execution_id
 CORRECTED for actual schema and proper URI structure
-Author: Assistant
 """
 
 import gzip
