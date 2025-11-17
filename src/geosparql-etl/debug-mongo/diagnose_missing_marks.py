@@ -1,12 +1,11 @@
 """
 Diagnostic script to identify missing marks in RDF conversion
-Finds marks that exist in MongoDB but weren't processed
+FIXED VERSION - Uses correct field paths with available indexes
 Author: Assistant
 """
 
 import logging
 import sys
-from collections import defaultdict
 from pathlib import Path
 
 # Setup logging
@@ -18,8 +17,7 @@ logger = logging.getLogger(__name__)
 # Add parent directory to path to import utils
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-# from utils import mongo_connection
-from utils.mongo_connection import mongo_connection
+from utils import mongo_connection
 
 # MongoDB connection settings - adjust as needed
 MONGO_HOST = "172.18.0.2"  # Or "localhost"
@@ -47,7 +45,7 @@ def analyze_missing_marks():
     """Analyze what marks are missing and why"""
 
     logger.info("=" * 60)
-    logger.info("MISSING MARKS DIAGNOSTIC")
+    logger.info("MISSING MARKS DIAGNOSTIC (FIXED VERSION)")
     logger.info("=" * 60)
 
     with mongo_connection(f"mongodb://{MONGO_HOST}:{MONGO_PORT}/", MONGO_DB) as db:
@@ -62,136 +60,158 @@ def analyze_missing_marks():
         completed_analyses = load_completed_analyses()
         logger.info(f"Completed analyses from checkpoint: {len(completed_analyses):,}")
 
-        # 3. Count marks by analysis_id presence
-        logger.info("\nAnalyzing mark distribution...")
-
-        # Sample to check for orphaned marks (marks without analysis)
-        defaultdict(int)
-
-        # Get all unique analysis_ids from marks collection
-        logger.info(
-            "Getting unique analysis_ids from marks collection (this may take a while)..."
-        )
-        unique_analysis_ids = db.mark.distinct("analysis_id")
-        logger.info(
-            f"Found {len(unique_analysis_ids):,} unique analysis_ids in marks collection"
-        )
-
-        # Check which analysis_ids exist in the analysis collection
-        missing_analyses = []
-        existing_analyses = []
-
-        logger.info(
-            "Checking which analysis_ids have corresponding analysis documents..."
-        )
-        for aid in unique_analysis_ids:
-            if aid:  # Skip None/null values
-                # Check if this analysis_id exists in the analysis collection
-                exists = db.analysis.count_documents({"_id": aid}, limit=1) > 0
-                if exists:
-                    existing_analyses.append(aid)
-                else:
-                    missing_analyses.append(aid)
-
-        logger.info(f"Analysis IDs with analysis documents: {len(existing_analyses):,}")
-        logger.info(
-            f"Analysis IDs WITHOUT analysis documents: {len(missing_analyses):,}"
-        )
-
-        # 4. Count marks for missing analyses
-        if missing_analyses:
-            logger.info("\nCounting marks for missing analyses (orphaned marks)...")
-            orphaned_count = 0
-            sample_missing = missing_analyses[:5]  # Sample first 5
-
-            for aid in missing_analyses:
-                count = db.mark.count_documents({"analysis_id": aid})
-                orphaned_count += count
-
-            logger.info(
-                f"Total orphaned marks (no analysis document): {orphaned_count:,}"
-            )
-
-            # Show samples
-            logger.info("\nSample of missing analysis_ids:")
-            for aid in sample_missing:
-                count = db.mark.count_documents({"analysis_id": aid})
-                logger.info(f"  - {aid}: {count:,} marks")
-
-        # 5. Check for marks with null/empty analysis_id
-        null_analysis_marks = db.mark.count_documents({"analysis_id": None})
-        empty_analysis_marks = db.mark.count_documents({"analysis_id": ""})
-
-        logger.info(f"\nMarks with null analysis_id: {null_analysis_marks:,}")
-        logger.info(f"Marks with empty string analysis_id: {empty_analysis_marks:,}")
-
-        # 6. Count marks for completed vs incomplete analyses
-        logger.info("\nAnalyzing completed vs incomplete analyses...")
-        completed_marks_count = 0
-        incomplete_marks_count = 0
-
-        for aid in existing_analyses:
-            mark_count = db.mark.count_documents({"analysis_id": aid})
-            if str(aid) in completed_analyses:
-                completed_marks_count += mark_count
-            else:
-                incomplete_marks_count += mark_count
-
-        logger.info(f"Marks in completed analyses: {completed_marks_count:,}")
-        logger.info(f"Marks in incomplete analyses: {incomplete_marks_count:,}")
-
-        # 7. Summary
+        # 3. Analyze mark structure - get sample to understand schema
         logger.info("\n" + "=" * 60)
-        logger.info("SUMMARY OF MISSING MARKS:")
+        logger.info("ANALYZING MARK SCHEMA:")
         logger.info("=" * 60)
 
-        accounted_marks = completed_marks_count + incomplete_marks_count
-        if missing_analyses:
-            accounted_marks += orphaned_count
-        accounted_marks += null_analysis_marks + empty_analysis_marks
-
-        logger.info(f"Total marks in MongoDB: {total_marks:,}")
-        logger.info(f"Marks accounted for: {accounted_marks:,}")
-        logger.info(f"Marks unaccounted: {total_marks - accounted_marks:,}")
-
-        logger.info("\nBreakdown:")
-        logger.info(f"  - Marks in completed analyses: {completed_marks_count:,}")
-        logger.info(f"  - Marks in incomplete analyses: {incomplete_marks_count:,}")
-        if missing_analyses:
-            logger.info(f"  - Orphaned marks (no analysis): {orphaned_count:,}")
-        logger.info(f"  - Marks with null analysis_id: {null_analysis_marks:,}")
-        logger.info(f"  - Marks with empty analysis_id: {empty_analysis_marks:,}")
-
-        # 8. Check markup types
-        logger.info("\n" + "=" * 60)
-        logger.info("MARKUP TYPE ANALYSIS:")
-        logger.info("=" * 60)
-
-        # Get sample of marks to understand structure
         sample_mark = db.mark.find_one()
         if sample_mark:
             logger.info(f"Sample mark keys: {list(sample_mark.keys())}")
-            if "properties" in sample_mark and sample_mark["properties"]:
+
+            # Check if analysis_id exists at all
+            has_analysis_id = "analysis_id" in sample_mark
+            logger.info(f"Has 'analysis_id' field: {has_analysis_id}")
+
+            # Check provenance structure
+            if "provenance" in sample_mark:
                 logger.info(
-                    f"Sample properties keys: {list(sample_mark['properties'].keys())}"
+                    f"Provenance keys: {list(sample_mark['provenance'].keys())}"
                 )
+                if "analysis" in sample_mark["provenance"]:
+                    logger.info(
+                        f"Provenance.analysis keys: {list(sample_mark['provenance']['analysis'].keys())}"
+                    )
 
-        # Try to identify computer vs human marks
-        # This depends on your data structure - adjust field names as needed
+        # 4. Check different possible fields for analysis reference
+        logger.info("\n" + "=" * 60)
+        logger.info("CHECKING ANALYSIS REFERENCE FIELDS:")
+        logger.info("=" * 60)
+
+        # Check marks with execution_id (uses index!)
+        marks_with_execution_id = db.mark.count_documents(
+            {"provenance.analysis.execution_id": {"$exists": True, "$ne": None}}
+        )
+        logger.info(
+            f"Marks with provenance.analysis.execution_id: {marks_with_execution_id:,}"
+        )
+
+        # Check marks without execution_id
+        marks_without_execution_id = db.mark.count_documents(
+            {
+                "$or": [
+                    {"provenance.analysis.execution_id": {"$exists": False}},
+                    {"provenance.analysis.execution_id": None},
+                ]
+            }
+        )
+        logger.info(f"Marks WITHOUT execution_id: {marks_without_execution_id:,}")
+
+        # Check if analysis_id field exists at all
+        if has_analysis_id:
+            logger.info("\nChecking analysis_id field (WARNING: NO INDEX - SLOW!)...")
+            marks_with_analysis_id = db.mark.count_documents(
+                {"analysis_id": {"$exists": True, "$ne": None, "$ne": ""}}
+            )
+            logger.info(f"Marks with non-null analysis_id: {marks_with_analysis_id:,}")
+
+            null_analysis_marks = db.mark.count_documents({"analysis_id": None})
+            empty_analysis_marks = db.mark.count_documents({"analysis_id": ""})
+            logger.info(f"Marks with null analysis_id: {null_analysis_marks:,}")
+            logger.info(
+                f"Marks with empty string analysis_id: {empty_analysis_marks:,}"
+            )
+
+        # 5. Check mark types using indexed fields
+        logger.info("\n" + "=" * 60)
+        logger.info("MARK TYPE ANALYSIS (using indexed fields):")
+        logger.info("=" * 60)
+
+        # Check by source (uses index!)
+        human_marks = db.mark.count_documents({"provenance.analysis.source": "human"})
         computer_marks = db.mark.count_documents(
-            {"provenance.analysis.execution_id": {"$exists": True}}
+            {"provenance.analysis.source": {"$ne": "human"}}
         )
-        logger.info(f"Marks with execution_id (likely computer): {computer_marks:,}")
 
-        # Alternative way to check
-        human_pattern = db.mark.count_documents(
-            {"marktype": {"$exists": True, "$eq": "human"}}
+        logger.info(f"Marks with source='human': {human_marks:,}")
+        logger.info(f"Marks with source != 'human': {computer_marks:,}")
+
+        # Get unique sources (uses index!)
+        logger.info("\nGetting unique sources...")
+        unique_sources = db.mark.distinct("provenance.analysis.source")
+        logger.info(f"Unique sources: {unique_sources}")
+
+        for source in unique_sources:
+            count = db.mark.count_documents({"provenance.analysis.source": source})
+            logger.info(f"  - {source}: {count:,} marks")
+
+        # 6. Check execution_id distribution (uses index!)
+        logger.info("\n" + "=" * 60)
+        logger.info("EXECUTION ID ANALYSIS:")
+        logger.info("=" * 60)
+
+        logger.info("Getting unique execution_ids (this may take a while)...")
+        unique_execution_ids = db.mark.distinct("provenance.analysis.execution_id")
+        logger.info(f"Found {len(unique_execution_ids):,} unique execution_ids")
+
+        # Sample a few execution_ids
+        sample_size = min(5, len(unique_execution_ids))
+        sample_execution_ids = unique_execution_ids[:sample_size]
+
+        logger.info("\nSample execution_ids and their mark counts:")
+        for exec_id in sample_execution_ids:
+            if exec_id:  # Skip None
+                # This uses index!
+                count = db.mark.count_documents(
+                    {"provenance.analysis.execution_id": exec_id}
+                )
+                logger.info(f"  - {exec_id}: {count:,} marks")
+
+        # 7. Check if execution_ids match analysis _ids
+        logger.info("\n" + "=" * 60)
+        logger.info("CHECKING EXECUTION_ID vs ANALYSIS _ID MATCH:")
+        logger.info("=" * 60)
+
+        # Get sample of analysis _ids
+        sample_analyses = list(db.analysis.find({}, {"_id": 1}).limit(5))
+
+        logger.info("Checking if analysis _ids appear as execution_ids in marks...")
+        for analysis in sample_analyses:
+            analysis_id = analysis["_id"]
+            # This uses index!
+            mark_count = db.mark.count_documents(
+                {"provenance.analysis.execution_id": analysis_id}
+            )
+            logger.info(
+                f"  Analysis {analysis_id}: {mark_count:,} marks with this execution_id"
+            )
+
+        # 8. Recommendations
+        logger.info("\n" + "=" * 60)
+        logger.info("RECOMMENDATIONS:")
+        logger.info("=" * 60)
+
+        logger.info(
+            """
+Based on the available indexes, your scripts should:
+
+1. USE 'provenance.analysis.execution_id' instead of 'analysis_id'
+   - This field is indexed and will be much faster
+   - Check if execution_id matches analysis._id
+
+2. USE 'provenance.analysis.source' for filtering human vs computer marks
+   - This field is indexed
+
+3. IF you must use 'analysis_id':
+   - Create an index first: db.mark.createIndex({"analysis_id": 1})
+   - Otherwise queries will be extremely slow (full collection scans)
+
+4. Consider that:
+   - execution_id might BE the analysis reference
+   - Marks might use execution_id instead of analysis_id
+   - You may not have "orphaned" marks - they might just use different fields
+        """
         )
-        computer_pattern = db.mark.count_documents(
-            {"marktype": {"$exists": True, "$eq": "computer"}}
-        )
-        logger.info(f"Marks with marktype='human': {human_pattern:,}")
-        logger.info(f"Marks with marktype='computer': {computer_pattern:,}")
 
 
 if __name__ == "__main__":
