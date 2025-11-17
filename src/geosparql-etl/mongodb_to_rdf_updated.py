@@ -222,6 +222,9 @@ def create_ttl_header(analysis_doc, batch_num):
     study = image.get("study", "")
     slide = image.get("slide", "")
 
+    # case_id is crucial - get it from params or use imageid as fallback
+    case_id = params.get("case_id") or image_id
+
     # Get analysis details
     execution_id = analysis["execution_id"]
     analysis_type = analysis.get("type", "computer")
@@ -234,11 +237,11 @@ def create_ttl_header(analysis_doc, batch_num):
     else:
         submit_timestamp = str(submit_date)
 
-    # Create a descriptive title from execution_id and image_id
-    title = f"{execution_id} - {image_id} (Batch {batch_num})"
+    # Create a descriptive title from execution_id and case_id
+    title = f"{execution_id} - {case_id} (Batch {batch_num})"
 
     # Build description
-    description = f"Nuclear segmentation results for {image_id}"
+    description = f"Nuclear segmentation results for {case_id}"
     if study:
         description += f" from study {study}"
     if subject_id:
@@ -263,7 +266,7 @@ def create_ttl_header(analysis_doc, batch_num):
     # Add image object (prov:Entity)
     ttl_content += f"""<urn:sha256:{image_hash}>
         a                so:ImageObject, prov:Entity ;
-        dcterms:identifier "{image_id}" ;"""
+        dcterms:identifier "{case_id}" ;"""
 
     if subject_id:
         # Use a domain-specific property for patient/subject ID instead of dcterms:subject
@@ -286,7 +289,8 @@ def create_ttl_header(analysis_doc, batch_num):
         dcterms:created      "{submit_timestamp}"^^xsd:dateTime ;
         dcterms:type         "{analysis_type}/{computation}" ;
         dcterms:title        "{title}" ;
-        dcterms:description  "{description}" ;"""
+        dcterms:description  "{description}" ;
+        hal:caseId           "{case_id}" ;"""
 
     # Add execution-specific metadata
     ttl_content += f"""
@@ -312,8 +316,8 @@ def create_ttl_header(analysis_doc, batch_num):
     if params:
         # Add each parameter with appropriate data typing
         for param_key, param_value in params.items():
-            # Skip redundant params already captured elsewhere
-            if param_key in ["image_width", "image_height", "case_id", "subject_id"]:
+            # Skip only truly redundant params (image dimensions are in the image object)
+            if param_key in ["image_width", "image_height"]:
                 continue
 
             # Create a safe property name
