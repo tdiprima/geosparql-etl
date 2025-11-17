@@ -130,25 +130,25 @@ def analyze_schema_fast():
                 pass
 
         # 5. Count using INDEXED fields only (fast!)
-        logger.info("\n5. Mark Counts Using INDEXED Fields:")
+        # logger.info("\n5. Mark Counts Using INDEXED Fields:")
 
-        if has_execution_id:
-            # This uses index - FAST!
-            marks_with_exec = db.mark.count_documents(
-                {"provenance.analysis.execution_id": {"$exists": True, "$ne": None}}
-            )
-            logger.info(f"  Marks with execution_id: {marks_with_exec:,}")
+        # if has_execution_id:
+        #     # This uses index - FAST!
+        #     marks_with_exec = db.mark.count_documents(
+        #         {"provenance.analysis.execution_id": {"$exists": True, "$ne": None}}
+        #     )
+        #     logger.info(f"  Marks with execution_id: {marks_with_exec:,}")
 
-        if has_source:
-            # This uses index - FAST!
-            human_marks = db.mark.count_documents(
-                {"provenance.analysis.source": "human"}
-            )
-            computer_marks = db.mark.count_documents(
-                {"provenance.analysis.source": {"$ne": "human"}}
-            )
-            logger.info(f"  Human marks: {human_marks:,}")
-            logger.info(f"  Computer marks: {computer_marks:,}")
+        # if has_source:
+        #     # This uses index - FAST!
+        #     human_marks = db.mark.count_documents(
+        #         {"provenance.analysis.source": "human"}
+        #     )
+        #     computer_marks = db.mark.count_documents(
+        #         {"provenance.analysis.source": {"$ne": "human"}}
+        #     )
+        #     logger.info(f"  Human marks: {human_marks:,}")
+        #     logger.info(f"  Computer marks: {computer_marks:,}")
 
         # 6. RECOMMENDATIONS
         logger.info("\n" + "=" * 60)
