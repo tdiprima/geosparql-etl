@@ -5,7 +5,6 @@ Optimized for ~4 billion marks
 Author: tdiprima 
 """
 
-import gc
 import gzip
 import hashlib
 import logging
@@ -16,7 +15,6 @@ from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from multiprocessing import Pool
 from pathlib import Path
-
 
 # Add parent directory to path to import utils
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -220,10 +218,10 @@ def create_ttl_header(analysis_doc, batch_num):
     # Image hash
     image_hash = get_image_hash(image["imageid"])
     case_id = params.get("case_id", image["imageid"])
-    
+
     # Extract cancer type if available
     cancer_type = params.get("cancer_type") or image.get("study")
-    
+
     timestamp = datetime.now(tz=timezone.utc).isoformat()
 
     # TTL header with prefixes
@@ -256,16 +254,16 @@ def create_ttl_header(analysis_doc, batch_num):
         dc:publisher         <${PUBLISHER_ROR_1}> , <${PUBLISHER_ROR_2}>;
         dc:references        "${DATASET_DOI}";
         dc:title             "nuclear-segmentation-predictions";"""
-    
+
     # Add execution ID
     ttl_content += f"""
         hal:executionId      "{analysis['execution_id']}";"""
-    
+
     # Add cancer type if available
     if cancer_type:
         ttl_content += f"""
         hal:cancerType       "{cancer_type}";"""
-    
+
     # Add provenance
     ttl_content += f"""
         prov:wasGeneratedBy  [ a                       prov:Activity;
@@ -293,38 +291,38 @@ def add_mark_to_ttl(mark, image_width, image_height, is_first_feature):
 
         # Get properties
         properties = features[0].get("properties", {})
-        
+
         # Build feature TTL
         feature_ttl = ""
-        
+
         # Add separator for multiple features
         if not is_first_feature:
             feature_ttl += ";\n"
-        
+
         # Start feature with inline blank node
         snomed_id = "68841002"
         feature_ttl += f"""        rdfs:member          [ a                   geo:Feature;
                                geo:hasGeometry     [ geo:asWKT  "{wkt}" ];
                                hal:classification  sno:{snomed_id}"""
-        
+
         # Add optional properties
         if "AreaInPixels" in properties:
             area_pixels = properties["AreaInPixels"]
             feature_ttl += f""";
                                hal:areaInPixels    "{int(area_pixels)}"^^xsd:int"""
-        
+
         if "PhysicalSize" in properties:
             physical_size = properties["PhysicalSize"]
             feature_ttl += f""";
                                hal:physicalSize    "{float(physical_size):.6f}"^^xsd:float"""
-        
+
         # Add measurement WITHOUT classification (single-class scenario)
-        feature_ttl += f""";
+        feature_ttl += """;
                                hal:measurement     [ hal:hasProbability  "1.0"^^xsd:float ]
                              ]"""
-        
+
         return feature_ttl, True
-        
+
     except Exception:
         return "", False
 
@@ -392,13 +390,15 @@ def process_analysis_worker(args):
             logger.info("Starting mark stream for %s:%s", exec_id, img_id)
             marks_cursor = db.mark.find(query, no_cursor_timeout=True).batch_size(100)
 
-            processed = 0          # marks that actually became features
-            mark_counter = 0       # all marks seen
-            batch_marks = 0        # marks in current TTL batch
+            processed = 0  # marks that actually became features
+            mark_counter = 0  # all marks seen
+            batch_marks = 0  # marks in current TTL batch
             batch_num = 1
 
             # Start TTL content with header (manual string building)
-            ttl_content, img_width, img_height = create_ttl_header(analysis_doc, batch_num)
+            ttl_content, img_width, img_height = create_ttl_header(
+                analysis_doc, batch_num
+            )
             is_first_feature = True
 
             try:
@@ -406,7 +406,9 @@ def process_analysis_worker(args):
                     mark_counter += 1
 
                     # Add mark to TTL string
-                    feature_ttl, success = add_mark_to_ttl(mark, img_width, img_height, is_first_feature)
+                    feature_ttl, success = add_mark_to_ttl(
+                        mark, img_width, img_height, is_first_feature
+                    )
                     if success:
                         ttl_content += feature_ttl
                         is_first_feature = False
@@ -428,9 +430,12 @@ def process_analysis_worker(args):
                     if batch_marks >= BATCH_SIZE:
                         # Close the feature collection
                         ttl_content += " .\n"
-                        
+
                         output_file = (
-                            OUTPUT_DIR / str(exec_id) / str(img_id) / f"batch_{batch_num:06d}.ttl.gz"
+                            OUTPUT_DIR
+                            / str(exec_id)
+                            / str(img_id)
+                            / f"batch_{batch_num:06d}.ttl.gz"
                         )
                         output_file.parent.mkdir(parents=True, exist_ok=True)
 
@@ -456,16 +461,21 @@ def process_analysis_worker(args):
                         batch_marks = 0
 
                         # Start new TTL content with new header
-                        ttl_content, img_width, img_height = create_ttl_header(analysis_doc, batch_num)
+                        ttl_content, img_width, img_height = create_ttl_header(
+                            analysis_doc, batch_num
+                        )
                         is_first_feature = True
 
                 # After loop: flush any remaining marks
                 if batch_marks > 0:
                     # Close the feature collection
                     ttl_content += " .\n"
-                    
+
                     output_file = (
-                        OUTPUT_DIR / str(exec_id) / str(img_id) / f"batch_{batch_num:06d}.ttl.gz"
+                        OUTPUT_DIR
+                        / str(exec_id)
+                        / str(img_id)
+                        / f"batch_{batch_num:06d}.ttl.gz"
                     )
                     output_file.parent.mkdir(parents=True, exist_ok=True)
 
@@ -563,8 +573,8 @@ def main():
             try:
                 for chunk_start in range(0, len(analyses_to_process), chunk_size):
                     chunk_ids = analyses_to_process[
-                                chunk_start: chunk_start + chunk_size
-                                ]
+                        chunk_start : chunk_start + chunk_size
+                    ]
 
                     # Fetch full documents for this chunk
                     chunk_docs = []
@@ -593,8 +603,10 @@ def main():
 
                     # Process in parallel and stream results as they finish
                     for i, result in enumerate(
-                            pool.imap_unordered(process_analysis_worker, worker_args, chunksize=1),
-                            1,
+                        pool.imap_unordered(
+                            process_analysis_worker, worker_args, chunksize=1
+                        ),
+                        1,
                     ):
                         if not result:
                             continue
