@@ -1,6 +1,6 @@
 """
-Schema analysis and index recommendation script
-Helps understand the actual data structure and creates needed indexes
+Schema analysis and index recommendation script - FAST VERSION
+Only uses indexed queries - safe for huge databases
 Author: Assistant
 """
 
@@ -25,205 +25,262 @@ MONGO_PORT = 27017
 MONGO_DB = "camic"
 
 
-def analyze_schema():
-    """Analyze the actual schema to understand how marks reference analyses"""
+def analyze_schema_fast():
+    """Analyze schema using ONLY fast, indexed queries"""
 
     logger.info("=" * 60)
-    logger.info("SCHEMA ANALYSIS & INDEX RECOMMENDATIONS")
+    logger.info("FAST SCHEMA ANALYSIS (Safe for Huge Databases)")
     logger.info("=" * 60)
 
     with mongo_connection(f"mongodb://{MONGO_HOST}:{MONGO_PORT}/", MONGO_DB) as db:
 
-        # 1. Sample multiple marks to understand schema
-        logger.info("\n1. Sampling 10 marks to understand schema...")
+        # 1. Get total counts (fast - just metadata)
+        logger.info("\n1. Collection Statistics:")
+        total_marks = db.mark.count_documents({})
+        total_analyses = db.analysis.count_documents({})
+        logger.info(f"Total marks: {total_marks:,}")
+        logger.info(f"Total analyses: {total_analyses:,}")
+
+        # 2. Sample a few marks to understand structure (fast - only 10 docs)
+        logger.info("\n2. Sampling Mark Structure (10 samples):")
         samples = list(db.mark.find({}).limit(10))
 
-        # Check which fields exist across samples
-        field_presence = {
-            "analysis_id": 0,
-            "provenance.analysis.execution_id": 0,
-            "provenance.analysis": 0,
-            "provenance.analysis.source": 0,
-        }
+        if not samples:
+            logger.error("No marks found in collection!")
+            return
+
+        # Check field presence
+        has_analysis_id = False
+        has_execution_id = False
+        has_source = False
 
         for mark in samples:
             if "analysis_id" in mark:
-                field_presence["analysis_id"] += 1
+                has_analysis_id = True
 
             if "provenance" in mark and "analysis" in mark["provenance"]:
-                field_presence["provenance.analysis"] += 1
-
                 if "execution_id" in mark["provenance"]["analysis"]:
-                    field_presence["provenance.analysis.execution_id"] += 1
-
+                    has_execution_id = True
                 if "source" in mark["provenance"]["analysis"]:
-                    field_presence["provenance.analysis.source"] += 1
+                    has_source = True
 
-        logger.info("\nField presence in 10 sample marks:")
-        for field, count in field_presence.items():
-            logger.info(f"  {field}: {count}/10 marks")
+        logger.info(f"  analysis_id field exists: {has_analysis_id}")
+        logger.info(f"  provenance.analysis.execution_id exists: {has_execution_id}")
+        logger.info(f"  provenance.analysis.source exists: {has_source}")
 
-        # 2. Show a complete sample mark structure
-        logger.info("\n2. Sample mark structure:")
-        if samples:
-            sample = samples[0]
-            logger.info(f"Top-level keys: {list(sample.keys())}")
+        # Show first sample structure
+        sample = samples[0]
+        logger.info(f"\n  Sample mark top-level keys: {list(sample.keys())}")
 
-            if "analysis_id" in sample:
-                logger.info(f"  analysis_id: {sample['analysis_id']}")
+        if "analysis_id" in sample:
+            logger.info(f"    analysis_id: {sample['analysis_id']}")
 
-            if "provenance" in sample:
-                logger.info(f"  provenance keys: {list(sample['provenance'].keys())}")
+        if "provenance" in sample:
+            logger.info(f"    provenance keys: {list(sample['provenance'].keys())}")
 
-                if "analysis" in sample["provenance"]:
-                    logger.info(
-                        f"  provenance.analysis keys: {list(sample['provenance']['analysis'].keys())}"
-                    )
+            if "analysis" in sample["provenance"]:
+                logger.info(
+                    f"    provenance.analysis keys: {list(sample['provenance']['analysis'].keys())}"
+                )
 
-                    # Show some values
-                    analysis = sample["provenance"]["analysis"]
-                    if "execution_id" in analysis:
-                        logger.info(f"    execution_id: {analysis['execution_id']}")
-                    if "source" in analysis:
-                        logger.info(f"    source: {analysis['source']}")
+                analysis = sample["provenance"]["analysis"]
+                if "execution_id" in analysis:
+                    logger.info(f"      execution_id: {analysis['execution_id']}")
+                if "source" in analysis:
+                    logger.info(f"      source: {analysis['source']}")
 
-        # 3. Compare execution_id with analysis _id
-        logger.info("\n3. Checking if execution_id matches analysis _id...")
+        # 3. Test if execution_id matches analysis._id (fast - indexed query)
+        logger.info("\n3. Testing execution_id → analysis._id Relationship:")
 
-        # Get a mark with execution_id
-        mark_with_exec = db.mark.find_one(
-            {"provenance.analysis.execution_id": {"$exists": True, "$ne": None}}
-        )
-
-        if mark_with_exec:
-            exec_id = mark_with_exec["provenance"]["analysis"]["execution_id"]
-            logger.info(f"Sample execution_id: {exec_id}")
-
-            # Check if this exists as analysis _id
-            analysis_exists = db.analysis.find_one({"_id": exec_id})
-            if analysis_exists:
-                logger.info("✓ Execution_id MATCHES analysis._id")
-                logger.info("  This means execution_id IS the analysis reference!")
-            else:
-                logger.info("✗ Execution_id does NOT match any analysis._id")
-                logger.info("  Need to investigate further...")
-
-        # 4. Check if analysis_id field exists and what it contains
-        logger.info("\n4. Checking analysis_id field (if it exists)...")
-
-        mark_with_analysis_id = db.mark.find_one({"analysis_id": {"$exists": True}})
-        if mark_with_analysis_id:
-            logger.info("✓ analysis_id field EXISTS")
-            analysis_id_value = mark_with_analysis_id.get("analysis_id")
-            logger.info(f"  Sample value: {analysis_id_value}")
-
-            # Check if this matches analysis _id
-            if analysis_id_value:
-                analysis_exists = db.analysis.find_one({"_id": analysis_id_value})
-                if analysis_exists:
-                    logger.info("  ✓ analysis_id MATCHES analysis._id")
-                else:
-                    logger.info("  ✗ analysis_id does NOT match any analysis._id")
-        else:
-            logger.info("✗ analysis_id field does NOT exist in marks")
-
-        # 5. Index recommendations
-        logger.info("\n" + "=" * 60)
-        logger.info("INDEX RECOMMENDATIONS:")
-        logger.info("=" * 60)
-
-        # Check current indexes
-        current_indexes = db.mark.index_information()
-        logger.info("\nCurrent indexes on mark collection:")
-        for name, info in current_indexes.items():
-            logger.info(f"  - {name}: {info['key']}")
-
-        # Determine what indexes are needed
-        logger.info("\n" + "=" * 60)
-        logger.info("RECOMMENDED ACTIONS:")
-        logger.info("=" * 60)
-
-        if mark_with_analysis_id:
-            # Check if analysis_id index exists
-            has_analysis_id_index = any(
-                "analysis_id" in str(info["key"]) for info in current_indexes.values()
+        if has_execution_id:
+            # Get a sample execution_id (uses index!)
+            mark_with_exec = db.mark.find_one(
+                {"provenance.analysis.execution_id": {"$exists": True, "$ne": None}},
+                {"provenance.analysis.execution_id": 1},
             )
 
-            if not has_analysis_id_index:
-                logger.info(
-                    """
-1. CREATE INDEX on analysis_id:
-   
-   Run in mongo shell:
-   use camic
-   db.mark.createIndex({"analysis_id": 1}, {background: true})
-   
-   This will enable your scripts to query by analysis_id efficiently.
-   Using background:true means it won't block other operations.
-   This may take a while depending on collection size.
-                """
-                )
-            else:
-                logger.info("✓ analysis_id index already exists")
+            if mark_with_exec:
+                exec_id = mark_with_exec["provenance"]["analysis"]["execution_id"]
+                logger.info(f"  Sample execution_id: {exec_id}")
 
-        # Recommend using execution_id if it's the actual reference
-        if mark_with_exec and exec_id:
+                # Check if this exists as analysis._id (uses index!)
+                analysis_exists = db.analysis.find_one({"_id": exec_id})
+                if analysis_exists:
+                    logger.info("  ✅ SUCCESS: execution_id MATCHES analysis._id")
+                    logger.info(
+                        "  → Use provenance.analysis.execution_id for queries (INDEXED)"
+                    )
+                else:
+                    logger.info("  ✗ execution_id does NOT match analysis._id")
+        else:
+            logger.info("  No execution_id field found")
+
+        # 4. Check current indexes
+        logger.info("\n4. Current Indexes on mark collection:")
+        indexes = db.mark.index_information()
+
+        has_analysis_id_index = False
+
+        for name, info in indexes.items():
+            key_str = str(info["key"])
+            logger.info(f"  [{name}]: {info['key']}")
+
+            if "analysis_id" in key_str:
+                has_analysis_id_index = True
+            if "execution_id" in key_str:
+                pass
+
+        # 5. Count using INDEXED fields only (fast!)
+        logger.info("\n5. Mark Counts Using INDEXED Fields:")
+
+        if has_execution_id:
+            # This uses index - FAST!
+            marks_with_exec = db.mark.count_documents(
+                {"provenance.analysis.execution_id": {"$exists": True, "$ne": None}}
+            )
+            logger.info(f"  Marks with execution_id: {marks_with_exec:,}")
+
+        if has_source:
+            # This uses index - FAST!
+            human_marks = db.mark.count_documents(
+                {"provenance.analysis.source": "human"}
+            )
+            computer_marks = db.mark.count_documents(
+                {"provenance.analysis.source": {"$ne": "human"}}
+            )
+            logger.info(f"  Human marks: {human_marks:,}")
+            logger.info(f"  Computer marks: {computer_marks:,}")
+
+        # 6. RECOMMENDATIONS
+        logger.info("\n" + "=" * 60)
+        logger.info("RECOMMENDATIONS:")
+        logger.info("=" * 60)
+
+        if has_execution_id and not has_analysis_id:
             logger.info(
                 """
-2. CONSIDER using execution_id instead of analysis_id:
-   
-   If execution_id matches analysis._id, you should:
-   - Query marks using: {"provenance.analysis.execution_id": analysis_id}
-   - This field is already indexed!
-   - Much faster than analysis_id queries
-                """
+✅ GOOD NEWS: Your marks use execution_id (which is INDEXED)
+
+RECOMMENDATION: Use execution_id instead of analysis_id
+- Change your queries from: {"analysis_id": X}
+- To: {"provenance.analysis.execution_id": X}
+- This field is already indexed - queries will be FAST
+- No index creation needed!
+
+Update your scripts to use:
+  db.mark.find({"provenance.analysis.execution_id": analysis_id})
+            """
             )
 
-        # 6. Generate corrected query examples
+        elif has_analysis_id and not has_analysis_id_index:
+            logger.info(
+                """
+⚠️  WARNING: analysis_id field exists but has NO INDEX
+
+CRITICAL: You MUST create an index before running ETL scripts!
+
+To create index, run ONE of these:
+
+Option 1 - Using this script:
+  python analyze_schema_and_indexes.py --create-index
+
+Option 2 - Manually in mongo shell:
+  mongo camic
+  > db.mark.createIndex({"analysis_id": 1}, {background: true, name: "analysis_id_1"})
+
+This will take time but is essential for performance.
+Without this index, queries will take HOURS or DAYS.
+            """
+            )
+
+        elif has_analysis_id and has_analysis_id_index:
+            logger.info(
+                """
+✅ EXCELLENT: analysis_id field exists AND is indexed
+
+Your database is ready for ETL processing!
+Queries on analysis_id will be fast.
+            """
+            )
+
+        else:
+            logger.info(
+                """
+⚠️  UNCLEAR: Need to investigate further
+
+Neither analysis_id nor execution_id seem to be the primary reference.
+Check your sample mark structure above to understand the schema.
+            """
+            )
+
+        # 7. Show correct query patterns
         logger.info("\n" + "=" * 60)
-        logger.info("CORRECTED QUERY EXAMPLES:")
+        logger.info("CORRECT QUERY PATTERNS FOR YOUR DATABASE:")
         logger.info("=" * 60)
 
-        logger.info(
+        if has_execution_id:
+            logger.info(
+                """
+For querying by analysis (USES INDEX - FAST):
+  db.mark.find({"provenance.analysis.execution_id": some_analysis_id})
+  db.mark.count_documents({"provenance.analysis.execution_id": some_analysis_id})
             """
-Instead of:
+            )
+
+        if has_analysis_id and has_analysis_id_index:
+            logger.info(
+                """
+For querying by analysis_id (USES INDEX - FAST):
   db.mark.find({"analysis_id": some_id})
+  db.mark.count_documents({"analysis_id": some_id})
+            """
+            )
 
-Use one of these (depending on your schema):
-
-Option A - If using execution_id (INDEXED):
-  db.mark.find({"provenance.analysis.execution_id": some_id})
-
-Option B - If using analysis_id (requires index):
-  # First create index:
-  db.mark.createIndex({"analysis_id": 1}, {background: true})
-  # Then query:
-  db.mark.find({"analysis_id": some_id})
-
-For human vs computer marks (INDEXED):
+        if has_source:
+            logger.info(
+                """
+For filtering by human vs computer (USES INDEX - FAST):
   db.mark.find({"provenance.analysis.source": "human"})
   db.mark.find({"provenance.analysis.source": {"$ne": "human"}})
-        """
-        )
+            """
+            )
+
+        # 8. WARNING about slow queries
+        logger.info("\n" + "=" * 60)
+        logger.info("⚠️  QUERIES TO AVOID (SLOW - NO INDEX):")
+        logger.info("=" * 60)
+
+        if has_analysis_id and not has_analysis_id_index:
+            logger.info(
+                """
+NEVER run these until index is created:
+  ❌ db.mark.find({"analysis_id": X})
+  ❌ db.mark.count_documents({"analysis_id": None})
+  ❌ db.mark.distinct("analysis_id")
+
+These will cause FULL COLLECTION SCAN (hours/days on huge database)
+            """
+            )
 
 
-def create_analysis_id_index_if_needed():
-    """Create index on analysis_id if the field exists and index doesn't"""
+def create_analysis_id_index():
+    """Create index on analysis_id"""
 
     logger.info("\n" + "=" * 60)
-    logger.info("CHECKING IF INDEX CREATION IS NEEDED:")
+    logger.info("CREATING analysis_id INDEX...")
     logger.info("=" * 60)
 
     with mongo_connection(f"mongodb://{MONGO_HOST}:{MONGO_PORT}/", MONGO_DB) as db:
 
-        # Check if field exists
-        has_field = db.mark.find_one({"analysis_id": {"$exists": True}}) is not None
+        # Check if field exists first (sample only - fast)
+        sample = db.mark.find_one({"analysis_id": {"$exists": True}})
 
-        if not has_field:
+        if not sample:
             logger.info("✗ analysis_id field doesn't exist - no index needed")
+            logger.info("  Your marks probably use execution_id instead")
             return
 
-        # Check if index exists
+        # Check if index already exists
         indexes = db.mark.index_information()
         has_index = any("analysis_id" in str(info["key"]) for info in indexes.values())
 
@@ -231,40 +288,42 @@ def create_analysis_id_index_if_needed():
             logger.info("✓ analysis_id index already exists")
             return
 
-        # Ask user if they want to create index
+        # Create the index
+        logger.info("Creating index on analysis_id...")
         logger.info(
-            """
-⚠ analysis_id field exists but has NO index!
-
-This will make your queries EXTREMELY slow.
-
-To create the index, run this in mongo shell:
-  use camic
-  db.mark.createIndex({"analysis_id": 1}, {background: true, name: "analysis_id_1"})
-
-Or run this script with --create-index flag to do it automatically.
-        """
+            "This may take several minutes to hours depending on collection size..."
         )
+        logger.info(
+            "The index is created in background mode, so database remains available."
+        )
+
+        try:
+            result = db.mark.create_index(
+                [("analysis_id", 1)], background=True, name="analysis_id_1"
+            )
+            logger.info(f"✅ Index created successfully: {result}")
+            logger.info("\nYou can now run your ETL scripts with fast queries!")
+
+        except Exception as e:
+            logger.error(f"✗ Error creating index: {e}")
+            logger.error("\nTry creating manually in mongo shell:")
+            logger.error("  mongo camic")
+            logger.error(
+                '  > db.mark.createIndex({"analysis_id": 1}, {background: true})'
+            )
 
 
 if __name__ == "__main__":
     import sys
 
-    analyze_schema()
-    create_analysis_id_index_if_needed()
+    # Run fast analysis
+    analyze_schema_fast()
 
-    # If --create-index flag, actually create the index
+    # If --create-index flag, create the index
     if "--create-index" in sys.argv:
+        create_analysis_id_index()
+    else:
         logger.info("\n" + "=" * 60)
-        logger.info("CREATING analysis_id INDEX...")
+        logger.info("To create index, run:")
+        logger.info("  python analyze_schema_and_indexes_fast.py --create-index")
         logger.info("=" * 60)
-
-        with mongo_connection(f"mongodb://{MONGO_HOST}:{MONGO_PORT}/", MONGO_DB) as db:
-            logger.info("Creating index... this may take several minutes...")
-            try:
-                result = db.mark.create_index(
-                    [("analysis_id", 1)], background=True, name="analysis_id_1"
-                )
-                logger.info(f"✓ Index created successfully: {result}")
-            except Exception as e:
-                logger.error(f"✗ Error creating index: {e}")
