@@ -1,6 +1,6 @@
 """
 Process orphaned marks (marks without corresponding analysis documents)
-These are marks that were missed in the main ETL process
+OPTIMIZED VERSION for 24-core machine
 Author: Assistant
 """
 
@@ -9,7 +9,7 @@ import logging
 import sys
 import time
 from datetime import datetime, timezone
-from multiprocessing import Pool
+from multiprocessing import Pool, cpu_count
 from pathlib import Path
 
 # Add parent directory to path to import utils
@@ -18,18 +18,18 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils import mongo_connection
 
 # =====================
-# CONFIG
+# CONFIG - OPTIMIZED FOR 24 CORES
 # =====================
-NUM_WORKERS = 20  # Number of parallel workers
+NUM_WORKERS = 24  # Use all available cores (was 20)
 BATCH_SIZE = 1000  # Marks per TTL file
-OUTPUT_DIR = Path("ttl_output_orphaned")  # Separate output directory
+OUTPUT_DIR = Path("ttl_output_orphaned")
 CHECKPOINT_DIR = Path("checkpoints_orphaned")
 LOG_FILE = "etl_orphaned.log"
 GZIP_COMPRESSION_LEVEL = 6
 
 # MongoDB connection settings
-MONGO_HOST = "172.18.0.2"  # Or "localhost"
-MONGO_PORT = 27017  # Or 27018
+MONGO_HOST = "172.18.0.2"
+MONGO_PORT = 27017
 MONGO_DB = "camic"
 
 # Create directories
@@ -52,19 +52,60 @@ def get_orphaned_analysis_ids():
     with mongo_connection(f"mongodb://{MONGO_HOST}:{MONGO_PORT}/", MONGO_DB) as db:
         logger.info("Finding orphaned analysis_ids...")
 
-        # Get all unique analysis_ids from marks
-        unique_analysis_ids = db.mark.distinct("analysis_id")
+        # OPTIMIZATION: Check if we should use execution_id instead
+        # Try to detect the correct field to use
+        sample = db.mark.find_one()
+
+        use_execution_id = False
+        if sample:
+            if "analysis_id" not in sample and "provenance" in sample:
+                if "analysis" in sample["provenance"]:
+                    if "execution_id" in sample["provenance"]["analysis"]:
+                        use_execution_id = True
+                        logger.info(
+                            "Using provenance.analysis.execution_id (indexed field)"
+                        )
+
+        if use_execution_id:
+            # Use indexed field!
+            unique_analysis_ids = db.mark.distinct("provenance.analysis.execution_id")
+            field_name = "provenance.analysis.execution_id"
+        else:
+            # Fall back to analysis_id (hopefully indexed by now!)
+            unique_analysis_ids = db.mark.distinct("analysis_id")
+            field_name = "analysis_id"
+
+        logger.info(f"Using field: {field_name}")
+        logger.info(f"Found {len(unique_analysis_ids):,} unique values")
 
         # Check which don't have analysis documents
-        for aid in unique_analysis_ids:
-            if aid and aid != "":  # Skip null/empty
-                exists = db.analysis.count_documents({"_id": aid}, limit=1) > 0
-                if not exists:
+        # OPTIMIZATION: Use batch checking for better performance
+        chunk_size = 1000
+        for i in range(0, len(unique_analysis_ids), chunk_size):
+            chunk = unique_analysis_ids[i : i + chunk_size]
+
+            # Batch check existence
+            existing_ids = set(
+                doc["_id"]
+                for doc in db.analysis.find(
+                    {"_id": {"$in": [aid for aid in chunk if aid and aid != ""]}},
+                    {"_id": 1},
+                )
+            )
+
+            # Find orphaned in this chunk
+            for aid in chunk:
+                if aid and aid != "" and aid not in existing_ids:
                     orphaned_ids.append(aid)
+
+            if (i + chunk_size) % 10000 == 0:
+                logger.info(
+                    f"Checked {i+chunk_size:,} IDs, found {len(orphaned_ids):,} orphaned"
+                )
 
         logger.info(f"Found {len(orphaned_ids):,} orphaned analysis_ids")
 
-    return orphaned_ids
+    return orphaned_ids, field_name
 
 
 def create_minimal_ttl_header(analysis_id, batch_num):
@@ -116,13 +157,17 @@ def polygon_to_wkt(geometry, default_width=40000, default_height=40000):
         return None
 
 
-def process_orphaned_marks(analysis_id):
+def process_orphaned_marks(args):
     """Process all marks for an orphaned analysis_id"""
 
+    analysis_id, field_name = args
+
     try:
+        # Create new connection for this worker
         with mongo_connection(f"mongodb://{MONGO_HOST}:{MONGO_PORT}/", MONGO_DB) as db:
             # Count marks for this analysis
-            mark_count = db.mark.count_documents({"analysis_id": analysis_id})
+            query = {field_name: analysis_id}
+            mark_count = db.mark.count_documents(query)
             logger.info(
                 f"Processing {mark_count:,} marks for orphaned analysis {analysis_id}"
             )
@@ -130,16 +175,14 @@ def process_orphaned_marks(analysis_id):
             if mark_count == 0:
                 return ("empty", analysis_id, 0)
 
+            # OPTIMIZATION: Build TTL in memory first, write once
+            current_batch = []
+
             # Process marks in batches
-            marks_cursor = db.mark.find(
-                {"analysis_id": analysis_id}, batch_size=BATCH_SIZE * 2
-            )
+            marks_cursor = db.mark.find(query, batch_size=BATCH_SIZE * 2)
 
             batch_num = 1
-            batch_marks = 0
             processed = 0
-            ttl_content = create_minimal_ttl_header(analysis_id, batch_num)
-            is_first_feature = True
 
             for mark in marks_cursor:
                 try:
@@ -154,21 +197,22 @@ def process_orphaned_marks(analysis_id):
                     if not wkt:
                         continue
 
-                    # Add mark to TTL
+                    # Add mark to current batch
                     mark_id = str(mark.get("_id", f"mark_{processed}"))
+                    current_batch.append(mark_id)
 
-                    if not is_first_feature:
-                        ttl_content += " ,\n        "
-
-                    ttl_content += f"""<https://grlc.io/api/MathurMihir/camic-apis/mark/{mark_id}>"""
-                    is_first_feature = False
-
-                    batch_marks += 1
                     processed += 1
 
                     # Write batch when full
-                    if batch_marks >= BATCH_SIZE:
-                        # Close feature collection
+                    if len(current_batch) >= BATCH_SIZE:
+                        # Build TTL for this batch
+                        ttl_content = create_minimal_ttl_header(analysis_id, batch_num)
+
+                        for i, mid in enumerate(current_batch):
+                            if i > 0:
+                                ttl_content += " ,\n        "
+                            ttl_content += f"""<https://grlc.io/api/MathurMihir/camic-apis/mark/{mid}>"""
+
                         ttl_content += " .\n"
 
                         # Write file
@@ -185,23 +229,27 @@ def process_orphaned_marks(analysis_id):
                         ) as f:
                             f.write(ttl_content)
 
-                        logger.info(
-                            f"Wrote batch {batch_num} for {analysis_id}: {batch_marks} marks"
-                        )
-
                         # Start new batch
                         batch_num += 1
-                        batch_marks = 0
-                        ttl_content = create_minimal_ttl_header(analysis_id, batch_num)
-                        is_first_feature = True
+                        current_batch = []
 
                 except Exception as e:
                     logger.error(f"Error processing mark: {e}")
                     continue
 
             # Write final batch
-            if batch_marks > 0:
+            if current_batch:
+                ttl_content = create_minimal_ttl_header(analysis_id, batch_num)
+
+                for i, mid in enumerate(current_batch):
+                    if i > 0:
+                        ttl_content += " ,\n        "
+                    ttl_content += (
+                        f"""<https://grlc.io/api/MathurMihir/camic-apis/mark/{mid}>"""
+                    )
+
                 ttl_content += " .\n"
+
                 output_file = OUTPUT_DIR / analysis_id / f"batch_{batch_num:06d}.ttl.gz"
                 output_file.parent.mkdir(parents=True, exist_ok=True)
 
@@ -213,10 +261,6 @@ def process_orphaned_marks(analysis_id):
                 ) as f:
                     f.write(ttl_content)
 
-                logger.info(
-                    f"Wrote final batch {batch_num} for {analysis_id}: {batch_marks} marks"
-                )
-
             marks_cursor.close()
             return ("completed", analysis_id, processed)
 
@@ -225,21 +269,17 @@ def process_orphaned_marks(analysis_id):
         return ("failed", analysis_id, 0, str(e))
 
 
-def process_worker(args):
-    """Worker function for multiprocessing"""
-    analysis_id = args
-    return process_orphaned_marks(analysis_id)
-
-
 def main():
     """Main function to process all orphaned marks"""
 
     logger.info("=" * 60)
-    logger.info("ORPHANED MARKS ETL PROCESS")
+    logger.info("ORPHANED MARKS ETL PROCESS (OPTIMIZED)")
     logger.info("=" * 60)
+    logger.info(f"Using {NUM_WORKERS} worker processes")
+    logger.info(f"Available CPU cores: {cpu_count()}")
 
     # Get orphaned analysis IDs
-    orphaned_ids = get_orphaned_analysis_ids()
+    orphaned_ids, field_name = get_orphaned_analysis_ids()
 
     if not orphaned_ids:
         logger.info("No orphaned marks found!")
@@ -255,7 +295,7 @@ def main():
                 completed.add(line.strip())
 
     # Filter out already processed
-    to_process = [aid for aid in orphaned_ids if aid not in completed]
+    to_process = [(aid, field_name) for aid in orphaned_ids if aid not in completed]
     logger.info(f"Need to process {len(to_process):,} orphaned analysis IDs")
 
     if not to_process:
@@ -264,34 +304,48 @@ def main():
 
     # Process in parallel
     total_marks = 0
+    completed_count = 0
+    failed_count = 0
     start_time = time.time()
 
+    # OPTIMIZATION: Use chunksize for better load balancing
+    chunksize = max(1, len(to_process) // (NUM_WORKERS * 4))
+
     with Pool(processes=NUM_WORKERS) as pool:
-        for i, result in enumerate(pool.imap_unordered(process_worker, to_process), 1):
+        for i, result in enumerate(
+            pool.imap_unordered(
+                process_orphaned_marks, to_process, chunksize=chunksize
+            ),
+            1,
+        ):
             status = result[0]
             analysis_id = result[1]
 
             if status == "completed":
                 mark_count = result[2]
                 total_marks += mark_count
+                completed_count += 1
 
                 # Save checkpoint
                 with open(checkpoint_file, "a") as f:
                     f.write(f"{analysis_id}\n")
 
-                logger.info(
-                    f"Completed {i}/{len(to_process)}: {analysis_id} - {mark_count:,} marks"
-                )
-
                 # Progress report
-                if i % 100 == 0:
+                if i % 10 == 0 or i == len(to_process):
                     elapsed = time.time() - start_time
                     rate = total_marks / elapsed if elapsed > 0 else 0
+                    percent = (i / len(to_process)) * 100
+                    eta = ((len(to_process) - i) / (i / elapsed)) / 60 if i > 0 else 0
+
                     logger.info(
-                        f"Progress: {i}/{len(to_process)} - Total marks: {total_marks:,} - Rate: {rate:.0f} marks/sec"
+                        f"Progress: {i}/{len(to_process)} ({percent:.1f}%) - "
+                        f"Marks: {total_marks:,} - "
+                        f"Rate: {rate:.0f} marks/s - "
+                        f"ETA: {eta:.1f} min"
                     )
 
             elif status == "failed":
+                failed_count += 1
                 error = result[3] if len(result) > 3 else "Unknown error"
                 logger.error(f"Failed {analysis_id}: {error}")
 
@@ -299,9 +353,12 @@ def main():
     elapsed = time.time() - start_time
     logger.info("=" * 60)
     logger.info("Orphaned marks ETL complete!")
+    logger.info(f"Completed: {completed_count:,} / {len(to_process):,}")
+    logger.info(f"Failed: {failed_count:,}")
     logger.info(f"Total orphaned marks processed: {total_marks:,}")
-    logger.info(f"Time elapsed: {elapsed/3600:.2f} hours")
+    logger.info(f"Time elapsed: {elapsed/3600:.2f} hours ({elapsed/60:.1f} minutes)")
     logger.info(f"Average rate: {total_marks/elapsed:.0f} marks/sec")
+    logger.info(f"Workers used: {NUM_WORKERS}")
     logger.info("=" * 60)
 
 
