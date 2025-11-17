@@ -28,6 +28,7 @@ nuclear_geosparql_output/
 geojson_files/
 geosparql_output/
 ttl_output/
+checkpoints/
 .claude/
 *.log
 *.csv
