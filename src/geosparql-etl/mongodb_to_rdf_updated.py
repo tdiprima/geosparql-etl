@@ -45,7 +45,7 @@ MONGO_DB = "camic"
 OUTPUT_DIR.mkdir(exist_ok=True)
 CHECKPOINT_DIR.mkdir(exist_ok=True)
 
-# SNOMED code for nuclear material
+# SNOMED code for nuclear material (only hard-coded value as requested)
 NUCLEAR_MATERIAL_SNOMED = "http://snomed.info/id/68841002"
 
 
@@ -211,21 +211,44 @@ def create_ttl_header(analysis_doc, batch_num):
     image = analysis_doc["image"]
     params = analysis["algorithm_params"]
 
-    # Get dimensions
+    # Get dimensions from algorithm params
     image_width = int(params.get("image_width", 40000))
     image_height = int(params.get("image_height", 40000))
 
-    # Image hash
+    # Get identifiers
     image_hash = get_image_hash(image["imageid"])
-    case_id = params.get("case_id", image["imageid"])
+    image_id = image["imageid"]
+    subject_id = image.get("subject", "")
+    study = image.get("study", "")
+    slide = image.get("slide", "")
 
-    # Extract cancer type if available
-    cancer_type = params.get("cancer_type") or image.get("study")
+    # Get analysis details
+    execution_id = analysis["execution_id"]
+    analysis_type = analysis.get("type", "computer")
+    computation = analysis.get("computation", "segmentation")
+    submit_date = analysis.get("submit_date", datetime.now(tz=timezone.utc))
 
-    timestamp = datetime.now(tz=timezone.utc).isoformat()
+    # Convert submit_date to ISO format if it's not already a string
+    if hasattr(submit_date, "isoformat"):
+        submit_timestamp = submit_date.isoformat()
+    else:
+        submit_timestamp = str(submit_date)
+
+    # Create a descriptive title from execution_id and image_id
+    title = f"{execution_id} - {image_id} (Batch {batch_num})"
+
+    # Build description
+    description = f"Nuclear segmentation results for {image_id}"
+    if study:
+        description += f" from study {study}"
+    if subject_id:
+        description += f", subject {subject_id}"
+    if slide:
+        description += f", slide {slide}"
+    description += f" - Batch {batch_num}"
 
     # TTL header with prefixes
-    ttl_content = """@prefix dc:   <http://purl.org/dc/terms/> .
+    ttl_content = """@prefix dcterms: <http://purl.org/dc/terms/> .
 @prefix exif: <http://www.w3.org/2003/12/exif/ns#> .
 @prefix geo:  <http://www.opengis.net/ont/geosparql#> .
 @prefix hal:  <https://halcyon.is/ns/> .
@@ -237,40 +260,82 @@ def create_ttl_header(analysis_doc, batch_num):
 
 """
 
-    # Add image object
+    # Add image object (prov:Entity)
     ttl_content += f"""<urn:sha256:{image_hash}>
-        a            so:ImageObject;
-        dc:identifier "{case_id}";
-        exif:height  "{image_height}"^^xsd:int;
-        exif:width   "{image_width}"^^xsd:int .
+        a                so:ImageObject, prov:Entity ;
+        dcterms:identifier "{image_id}" ;"""
 
-"""
-
-    # Start feature collection with <> as the subject (self-reference)
-    ttl_content += f"""<>      a                    geo:FeatureCollection;
-        dc:creator           "http://orcid.org/0000-0003-4165-4062";
-        dc:date              "{timestamp}"^^xsd:dateTime;
-        dc:description       "Nuclear segmentation for {case_id} batch {batch_num}";
-        dc:publisher         <https://ror.org/01882y777> , <https://ror.org/05qghxh33>;
-        dc:references        "https://doi.org/10.1038/s41597-020-0528-1";
-        dc:title             "nuclear-segmentation-predictions";"""
-
-    # Add execution ID
-    ttl_content += f"""
-        hal:executionId      "{analysis['execution_id']}";"""
-
-    # Add cancer type if available
-    if cancer_type:
+    if subject_id:
+        # Use a domain-specific property for patient/subject ID instead of dcterms:subject
         ttl_content += f"""
-        hal:cancerType       "{cancer_type}";"""
+        hal:subjectId    "{subject_id}" ;"""
 
-    # Add provenance
+    if study:
+        ttl_content += f"""
+        dcterms:isPartOf "{study}" ;"""
+
     ttl_content += f"""
-        prov:wasGeneratedBy  [ a                       prov:Activity;
-                               prov:used               <urn:sha256:{image_hash}>;
-                               prov:wasAssociatedWith  <https://github.com/nuclear-segmentation-model>
-                             ];
+        exif:height      "{image_height}"^^xsd:int ;
+        exif:width       "{image_width}"^^xsd:int .
+
 """
+
+    # Start feature collection with proper Dublin Core and PROV-O terms
+    ttl_content += f"""<>      a                    geo:FeatureCollection, prov:Entity ;
+        dcterms:identifier   "{str(analysis_doc.get('_id', ''))}" ;
+        dcterms:created      "{submit_timestamp}"^^xsd:dateTime ;
+        dcterms:type         "{analysis_type}/{computation}" ;
+        dcterms:title        "{title}" ;
+        dcterms:description  "{description}" ;"""
+
+    # Add execution-specific metadata
+    ttl_content += f"""
+        hal:executionId      "{execution_id}" ;"""
+
+    if study:
+        ttl_content += f"""
+        hal:study            "{study}" ;"""
+
+    # Add proper PROV-O provenance chain
+    ttl_content += f"""
+        prov:wasGeneratedBy  <urn:analysis:{execution_id}> ;
+        prov:wasDerivedFrom  <urn:sha256:{image_hash}> ;
+"""
+
+    # Add the analysis activity details
+    ttl_content += f"""
+<urn:analysis:{execution_id}>
+        a                    prov:Activity ;
+        prov:used            <urn:sha256:{image_hash}> ;"""
+
+    # Add algorithm parameters as the plan
+    if params:
+        # Select key parameters to include
+        key_params = []
+        if "mpp" in params:
+            key_params.append(f'mpp={params["mpp"]}')
+        if "min_size" in params:
+            key_params.append(f'min_size={params["min_size"]}')
+        if "max_size" in params:
+            key_params.append(f'max_size={params["max_size"]}')
+        if "output_level" in params:
+            key_params.append(f'output_level={params["output_level"]}')
+
+        if key_params:
+            plan_description = f"{computation} algorithm ({', '.join(key_params)})"
+            ttl_content += f"""
+        prov:hadPlan         "{plan_description}" ;"""
+
+    # Add start time if available
+    if submit_timestamp:
+        ttl_content += f"""
+        prov:startedAtTime   "{submit_timestamp}"^^xsd:dateTime ;"""
+
+    # Close the analysis activity
+    ttl_content += """
+        .
+
+<>      """  # Return to the feature collection subject
 
     return ttl_content, image_width, image_height
 
@@ -278,7 +343,7 @@ def create_ttl_header(analysis_doc, batch_num):
 def add_mark_to_ttl(mark, image_width, image_height, is_first_feature):
     """Add mark to TTL string (manual building for clean inline blank nodes)"""
     try:
-        # Get geometry
+        # Get geometry from mark structure
         geometries = mark.get("geometries", {})
         features = geometries.get("features", [])
         if not features:
@@ -289,8 +354,9 @@ def add_mark_to_ttl(mark, image_width, image_height, is_first_feature):
         if not wkt:
             return "", False
 
-        # Get properties
-        properties = features[0].get("properties", {})
+        # Get properties - check both in features and in mark.properties
+        feature_props = features[0].get("properties", {})
+        mark_props = mark.get("properties", {}).get("annotations", {})
 
         # Build feature TTL
         feature_ttl = ""
@@ -299,25 +365,42 @@ def add_mark_to_ttl(mark, image_width, image_height, is_first_feature):
         if not is_first_feature:
             feature_ttl += ";\n"
 
-        # Start feature with inline blank node
-        snomed_id = "68841002"
-        feature_ttl += f"""        rdfs:member          [ a                   geo:Feature;
-                               geo:hasGeometry     [ geo:asWKT  "{wkt}" ];
-                               hal:classification  sno:{snomed_id}"""
+        # Start feature with inline blank node - this mark is a prov:Entity that was generated by the analysis
+        feature_ttl = f"""        rdfs:member          [ a                   geo:Feature, prov:Entity ;
+                               geo:hasGeometry     [ geo:asWKT  "{wkt}" ] ;
+                               hal:classification  <{NUCLEAR_MATERIAL_SNOMED}>"""
 
-        # Add optional properties
-        if "AreaInPixels" in properties:
-            area_pixels = properties["AreaInPixels"]
-            feature_ttl += f""";
+        # Add area in pixels if available
+        area_pixels = mark_props.get("AreaInPixels") or feature_props.get(
+            "AreaInPixels"
+        )
+        if area_pixels:
+            feature_ttl += f""" ;
                                hal:areaInPixels    "{int(area_pixels)}"^^xsd:int"""
 
-        if "PhysicalSize" in properties:
-            physical_size = properties["PhysicalSize"]
-            feature_ttl += f""";
+        # Add physical size if available
+        physical_size = mark_props.get("PhysicalSize") or feature_props.get(
+            "PhysicalSize"
+        )
+        if physical_size:
+            feature_ttl += f""" ;
                                hal:physicalSize    "{float(physical_size):.6f}"^^xsd:float"""
 
-        # Add measurement WITHOUT classification (single-class scenario)
-        feature_ttl += """;
+        # Add object type if available
+        object_type = mark.get("object_type")
+        if object_type:
+            feature_ttl += f""" ;
+                               dcterms:type        "{object_type}" """
+
+        # Add provenance relationship - this mark was generated by the analysis
+        provenance = mark.get("provenance", {})
+        if provenance and provenance.get("analysis", {}).get("execution_id"):
+            exec_id = provenance["analysis"]["execution_id"]
+            feature_ttl += f""" ;
+                               prov:wasGeneratedBy <urn:analysis:{exec_id}>"""
+
+        # Add measurement (keeping the probability as before)
+        feature_ttl += """ ;
                                hal:measurement     [ hal:hasProbability  "1.0"^^xsd:float ]
                              ]"""
 
@@ -356,81 +439,60 @@ def process_analysis_worker(args):
         start_time = time.time()
         logger.info("Connecting to MongoDB for %s:%s", exec_id, img_id)
 
-        # Fresh Mongo connection per worker
+        # Initialize checkpoint manager
+        checkpoint = ParallelCheckpointManager(checkpoint_dir)
+        checkpoint.mark_in_progress(analysis_id, worker_id)
+
+        # Connect to MongoDB
         with mongo_connection(f"mongodb://{MONGO_HOST}:{MONGO_PORT}/", MONGO_DB) as db:
-            logger.info("MongoDB connection established for %s:%s", exec_id, img_id)
 
-            # Build query – prefer slide+execution_id to hit existing index:
-            # { 'provenance.image.slide': 1, 'provenance.analysis.execution_id': 1, ... }
+            # Query for marks using the indexed fields
+            query = {
+                "provenance.analysis.execution_id": exec_id,
+                "provenance.image.imageid": img_id,
+            }
+
+            # Add slide filter if available (helps with index selectivity)
             if slide:
-                query = {
-                    "provenance.image.slide": slide,
-                    "provenance.analysis.execution_id": exec_id,
-                }
-                logger.info(
-                    "Using indexed query on slide+execution_id for %s:%s (slide=%s)",
-                    exec_id,
-                    img_id,
-                    slide,
-                )
-            else:
-                # Fallback: imageid (no good index; warn loudly)
-                query = {
-                    "provenance.analysis.execution_id": exec_id,
-                    "provenance.image.imageid": img_id,
-                }
-                logger.warning(
-                    "No slide field on analysis_doc for %s:%s; falling back to "
-                    "imageid-based query (may be slow)",
-                    exec_id,
-                    img_id,
-                )
+                query["provenance.image.slide"] = slide
 
-            # Stream marks cursor
-            logger.info("Starting mark stream for %s:%s", exec_id, img_id)
-            marks_cursor = db.mark.find(query, no_cursor_timeout=True).batch_size(100)
-
-            processed = 0  # marks that actually became features
-            mark_counter = 0  # all marks seen
-            batch_marks = 0  # marks in current TTL batch
-            batch_num = 1
-
-            # Start TTL content with header (manual string building)
-            ttl_content, img_width, img_height = create_ttl_header(
-                analysis_doc, batch_num
+            logger.info(
+                "Streaming marks for %s:%s with query: %s", exec_id, img_id, query
             )
-            is_first_feature = True
+
+            # Stream marks with cursor
+            marks_cursor = db.mark.find(query, batch_size=5000, no_cursor_timeout=False)
 
             try:
-                for mark in marks_cursor:
-                    mark_counter += 1
+                batch_num = 1
+                batch_marks = 0
+                processed = 0
+                skipped = 0
+                is_first_feature = True
 
-                    # Add mark to TTL string
-                    feature_ttl, success = add_mark_to_ttl(
+                # Start first batch
+                ttl_content, img_width, img_height = create_ttl_header(
+                    analysis_doc, batch_num
+                )
+
+                for mark in marks_cursor:
+                    mark_ttl, success = add_mark_to_ttl(
                         mark, img_width, img_height, is_first_feature
                     )
                     if success:
-                        ttl_content += feature_ttl
-                        is_first_feature = False
-                        processed += 1
+                        ttl_content += mark_ttl
                         batch_marks += 1
+                        processed += 1
+                        is_first_feature = False
+                    else:
+                        skipped += 1
 
-                    # Heartbeat every 100k processed marks
-                    if processed and processed % 100_000 == 0:
-                        logger.info(
-                            "Still processing %s:%s – %s marks processed so far "
-                            "(%s seen total)",
-                            exec_id,
-                            img_id,
-                            f"{processed:,}",
-                            f"{mark_counter:,}",
-                        )
-
-                    # When batch is full, flush TTL
+                    # Check if batch is full
                     if batch_marks >= BATCH_SIZE:
                         # Close the feature collection
                         ttl_content += " .\n"
 
+                        # Write batch file
                         output_file = (
                             OUTPUT_DIR
                             / str(exec_id)
@@ -448,11 +510,11 @@ def process_analysis_worker(args):
                             f.write(ttl_content)
 
                         logger.info(
-                            "Wrote batch %d for %s:%s → %s (%s marks in this batch, %s total)",
+                            "Wrote batch %d for %s:%s → %s (%s marks, %s total)",
                             batch_num,
                             exec_id,
                             img_id,
-                            output_file,
+                            output_file.name,
                             f"{batch_marks:,}",
                             f"{processed:,}",
                         )
