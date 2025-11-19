@@ -251,7 +251,6 @@ def create_ttl_header(analysis_doc, batch_num):
         dc:creator           "${CREATOR_ORCID}";
         dc:date              "{timestamp}"^^xsd:dateTime;
         dc:description       "Nuclear segmentation for {case_id} batch {batch_num}";
-        dc:publisher         <${PUBLISHER_ROR_1}> , <${PUBLISHER_ROR_2}>;
         dc:references        "${DATASET_DOI}";
         dc:title             "nuclear-segmentation-predictions";"""
 
