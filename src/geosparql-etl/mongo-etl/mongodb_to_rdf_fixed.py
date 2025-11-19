@@ -112,6 +112,7 @@ def fixed_process_analysis_worker(args):
                 "provenance.image.imageid": img_id,
             }
 
+            # Add slide filter if available (helps with index selectivity)
             if slide:
                 query["provenance.image.slide"] = slide
 
@@ -136,6 +137,10 @@ def fixed_process_analysis_worker(args):
                         mark, img_width, img_height, is_first_feature
                     )
                     if success:
+                        # Add semicolon after previous mark if this isn't the first
+                        if not is_first_feature:
+                            ttl_content += " ;\n"
+
                         ttl_content += mark_ttl
                         batch_marks += 1
                         processed += 1
@@ -143,8 +148,10 @@ def fixed_process_analysis_worker(args):
 
                     # Write batch when full
                     if batch_marks >= BATCH_SIZE:
+                        # Close the last mark and the feature collection (no semicolon on last item)
                         ttl_content += " .\n"
 
+                        # Write batch file
                         output_file = (
                             OUTPUT_DIR
                             / str(exec_id)
@@ -171,6 +178,8 @@ def fixed_process_analysis_worker(args):
 
                         batch_num += 1
                         batch_marks = 0
+
+                        # Start new TTL content with new header
                         ttl_content, img_width, img_height = create_ttl_header(
                             analysis_doc, batch_num
                         )
@@ -178,6 +187,7 @@ def fixed_process_analysis_worker(args):
 
                 # Write remaining marks
                 if batch_marks > 0:
+                    # Close the last mark and the feature collection (no semicolon on last item)
                     ttl_content += " .\n"
 
                     output_file = (
@@ -250,6 +260,7 @@ def main_fixed():
         f"Resuming - Completed: {initial_stats['completed']}, Failed: {initial_stats['failed']}"
     )
 
+    # Get list of analyses to process
     with mongo_connection(f"mongodb://{MONGO_HOST}:{MONGO_PORT}/", MONGO_DB) as db:
         total_analyses = db.analysis.count_documents({})
         main_logger.info(f"Found {total_analyses:,} total analyses")
@@ -272,6 +283,7 @@ def main_fixed():
         total_marks = 0
         start_time = time.time()
 
+        # Create process pool
         with Pool(processes=NUM_WORKERS) as pool:
             try:
                 for chunk_start in range(0, len(analyses_to_process), chunk_size):
