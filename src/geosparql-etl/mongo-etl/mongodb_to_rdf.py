@@ -251,7 +251,6 @@ def create_ttl_header(analysis_doc, batch_num):
         dc:creator           "http://orcid.org/0000-0003-4165-4062";
         dc:date              "{timestamp}"^^xsd:dateTime;
         dc:description       "Nuclear segmentation for {case_id} batch {batch_num}";
-        dc:publisher         <https://ror.org/01882y777> , <https://ror.org/05qghxh33>;
         dc:references        "https://doi.org/10.1038/s41597-020-0528-1";
         dc:title             "nuclear-segmentation-predictions";"""
 
