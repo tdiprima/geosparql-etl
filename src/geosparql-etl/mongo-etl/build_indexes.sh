@@ -12,14 +12,10 @@ echo "Log: $LOGFILE"
 MONGO_HOST="localhost:27017"
 DB_NAME="camic"
 
-# You can modify this to use authentication if needed:
-# AUTH_ARGS="--username user --password pass --authenticationDatabase admin"
-AUTH_ARGS=""
-
 # --- INDEX COMMANDS ---
 echo "Creating mark.provenance.image.imageid index..." | tee -a "$LOGFILE"
 
-mongosh $AUTH_ARGS --host "$MONGO_HOST" <<EOF | tee -a "$LOGFILE"
+mongo --host "$MONGO_HOST" <<EOF | tee -a "$LOGFILE"
 use $DB_NAME
 
 db.mark.createIndex(
