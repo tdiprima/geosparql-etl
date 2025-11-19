@@ -6,7 +6,23 @@ import os
 import threading
 
 # Import everything from the updated version
-from mongodb_to_rdf_updated import *
+# from mongodb_to_rdf_updated import *
+from mongodb_to_rdf_updated import (
+    ParallelCheckpointManager,
+    mongo_connection,
+    setup_worker_logger,
+    main_logger,
+    create_ttl_header,
+    add_mark_to_ttl,
+    MONGO_HOST,
+    MONGO_PORT,
+    MONGO_DB,
+    BATCH_SIZE,
+    OUTPUT_DIR,
+    CHECKPOINT_DIR,
+    GZIP_COMPRESSION_LEVEL,
+    NUM_WORKERS,
+)
 
 # Thread-safe file lock for checkpoint operations
 checkpoint_lock = threading.Lock()
