@@ -6,7 +6,6 @@ import requests
 from dotenv import load_dotenv
 from urllib3.exceptions import InsecureRequestWarning
 
-# Load environment variables from .env file
 load_dotenv()
 
 # Suppress InsecureRequestWarning when using verify=False
@@ -64,7 +63,6 @@ def get_real_hash_from_node(node_id: int, auth=None) -> str:
     j = get_drupal_json(node_id, auth=auth)
     file_path = extract_file_path(j)
 
-    # This path might be inside Docker, so adjust mountpoints if needed
     p = Path(file_path)
     if not p.exists():
         raise FileNotFoundError(f"File not found at {p}, fix path mapping")
