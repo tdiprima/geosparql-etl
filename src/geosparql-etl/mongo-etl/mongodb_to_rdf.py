@@ -296,8 +296,7 @@ def create_ttl_header(analysis_doc, batch_num):
             f'        geo:asWKT "POLYGON ((0 0, {image_width} 0, {image_width} {image_height}, 0 {image_height}, 0 0))"^^geo:wktLiteral',
             "    ] ;",
             "    camic:hasFeatureCollection [",
-            "        a geo:FeatureCollection ;",
-            "        geo:hasMember",
+            "        a geo:FeatureCollection",
         ]
     )
 
@@ -360,42 +359,43 @@ def add_mark_to_ttl(mark, image_width, image_height, is_first_feature):
         if not wkt:
             return "", False
 
-        # Build mark TTL
+        # Build mark TTL - each mark gets its own geo:hasMember statement
         mark_lines = [
-            "            [",
-            "                a geo:Feature ;",
-            f'                camic:markId "{mark_id}" ;',
+            " ;",  # Semicolon to continue from previous line
+            "        geo:hasMember [",
+            "            a geo:Feature ;",
+            f'            camic:markId "{mark_id}" ;',
         ]
 
         # Add execution ID
-        mark_lines.append(f'                camic:executionId "{exec_id}" ;')
+        mark_lines.append(f'            camic:executionId "{exec_id}" ;')
 
         # Add cell type
         if nucleustype:
-            mark_lines.append(f'                camic:nucleusType "{nucleustype}" ;')
+            mark_lines.append(f'            camic:nucleusType "{nucleustype}" ;')
 
         # Add SNOMED code for nuclear material (automatic for all nucleus marks)
         if is_nuclear_material:
             mark_lines.append(
-                f"                camic:hasMaterialType snomed:68841002 ;  # Nuclear material"
+                f"            camic:hasMaterialType snomed:68841002 ;  # Nuclear material"
             )
 
         # Only add human annotation if it exists and is valid
         if has_valid_annotation and annotation_code:
             mark_lines.append(
-                f"                camic:hasAnnotation <{annotation_code}> ;  # Human-verified SNOMED code"
+                f"            camic:hasAnnotation <{annotation_code}> ;  # Human-verified SNOMED code"
             )
 
         # Add numeric properties
-        mark_lines.append(f"                camic:footprint {footprint} ;")
+        mark_lines.append(f"            camic:footprint {footprint} ;")
 
         # Add geometry (no trailing semicolon - this is the last property)
         mark_lines.extend(
             [
-                "                geo:hasGeometry [",
-                f'                    geo:asWKT "{wkt}"^^geo:wktLiteral',
-                "                ]",
+                "            geo:hasGeometry [",
+                f'                geo:asWKT "{wkt}"^^geo:wktLiteral',
                 "            ]",
+                "        ]",  # Close the geo:hasMember anonymous node
             ]
         )
 
@@ -477,19 +477,19 @@ def process_analysis_worker(args):
                         mark, img_width, img_height, is_first_feature
                     )
                     if success:
-                        # Add semicolon after previous mark if this isn't the first
-                        if not is_first_feature:
-                            ttl_content += " ;\n"
-
-                        ttl_content += mark_ttl
+                        ttl_content += mark_ttl  # Each mark already has its own semicolon at the start
                         batch_marks += 1
                         processed += 1
                         is_first_feature = False
 
                     # Write batch when full
                     if batch_marks >= BATCH_SIZE:
-                        # Close the last mark and the feature collection (no semicolon on last item)
-                        ttl_content += " .\n"
+                        # Remove trailing semicolon and newline, then close structure
+                        if ttl_content.rstrip().endswith(";"):
+                            ttl_content = ttl_content.rstrip()[
+                                :-1
+                            ]  # Remove last semicolon
+                        ttl_content += "\n    ] .\n"  # Close hasFeatureCollection
 
                         # Write compressed TTL file
                         output_file = (
@@ -527,8 +527,10 @@ def process_analysis_worker(args):
 
                 # After loop: flush any remaining marks
                 if batch_marks > 0:
-                    # Close the last mark and the feature collection (no semicolon on last item)
-                    ttl_content += " .\n"
+                    # Remove trailing semicolon and newline, then close structure
+                    if ttl_content.rstrip().endswith(";"):
+                        ttl_content = ttl_content.rstrip()[:-1]  # Remove last semicolon
+                    ttl_content += "\n    ] .\n"  # Close hasFeatureCollection
 
                     output_file = (
                         OUTPUT_DIR
