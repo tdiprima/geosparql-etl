@@ -8,8 +8,10 @@ Author: Bear 🐻
 import gzip
 import hashlib
 import logging
+import os
 import signal
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
@@ -45,8 +47,11 @@ MONGO_DB = "camic"
 OUTPUT_DIR.mkdir(exist_ok=True)
 CHECKPOINT_DIR.mkdir(exist_ok=True)
 
-# SNOMED code for nuclear material
+# SNOMED code for nuclear material (only hard-coded value as requested)
 NUCLEAR_MATERIAL_SNOMED = "http://snomed.info/id/68841002"
+
+# Thread-safe file lock for checkpoint operations
+checkpoint_lock = threading.Lock()
 
 
 # =====================
@@ -103,10 +108,10 @@ main_logger.addHandler(console)
 
 
 # =====================
-# 🔍 PARALLEL CHECKPOINT MANAGER
+# 🔍 PARALLEL CHECKPOINT MANAGER (WITH FIXES)
 # =====================
 class ParallelCheckpointManager:
-    """Checkpoint manager that works across multiple processes"""
+    """Checkpoint manager that works across multiple processes with thread-safe operations"""
 
     def __init__(self, checkpoint_dir):
         self.checkpoint_dir = Path(checkpoint_dir)
@@ -118,9 +123,8 @@ class ParallelCheckpointManager:
         self.completed = self._load_set(self.completed_file)
         self.failed = self._load_set(self.failed_file)
 
-        # Clear in-progress file on start (in case of previous crash)
-        if self.in_progress_file.exists():
-            self.in_progress_file.unlink()
+        # Ensure in_progress file exists before any worker tries to use it
+        self.in_progress_file.touch(exist_ok=True)
 
     def _load_set(self, filepath):
         """Load a set of IDs from a file"""
@@ -130,7 +134,7 @@ class ParallelCheckpointManager:
                 for line in f:
                     line = line.strip()
                     if line:
-                        ids.add(line)
+                        ids.add(line.split("|")[0])  # Handle both formats
         return ids
 
     def is_completed(self, analysis_id):
@@ -147,22 +151,40 @@ class ParallelCheckpointManager:
         return aid not in self.completed and aid not in self.failed
 
     def mark_completed(self, analysis_id):
-        """Mark analysis as completed (thread-safe append)"""
-        with open(self.completed_file, "a") as f:
-            f.write(f"{analysis_id}\n")
-            f.flush()
+        """Mark analysis as completed (thread-safe append with fsync)"""
+        with checkpoint_lock:
+            # Ensure directory exists
+            self.checkpoint_dir.mkdir(exist_ok=True)
+
+            with open(self.completed_file, "a") as f:
+                f.write(f"{analysis_id}\n")
+                f.flush()
+                os.fsync(f.fileno())  # Force write to disk
 
     def mark_failed(self, analysis_id, error=None):
-        """Mark analysis as failed"""
-        with open(self.failed_file, "a") as f:
-            f.write(f"{analysis_id}|{error}\n")
-            f.flush()
+        """Mark analysis as failed (thread-safe)"""
+        with checkpoint_lock:
+            # Ensure directory exists
+            self.checkpoint_dir.mkdir(exist_ok=True)
+
+            with open(self.failed_file, "a") as f:
+                f.write(f"{analysis_id}|{error}\n")
+                f.flush()
+                os.fsync(f.fileno())
 
     def mark_in_progress(self, analysis_id, worker_id):
-        """Mark as being processed by a worker"""
-        with open(self.in_progress_file, "a") as f:
-            f.write(f"{analysis_id}|worker_{worker_id}|{datetime.now().isoformat()}\n")
-            f.flush()
+        """Mark as being processed by a worker (thread-safe with file existence check)"""
+        with checkpoint_lock:
+            # Ensure file exists
+            if not self.in_progress_file.exists():
+                self.in_progress_file.touch()
+
+            with open(self.in_progress_file, "a") as f:
+                f.write(
+                    f"{analysis_id}|worker_{worker_id}|{datetime.now().isoformat()}\n"
+                )
+                f.flush()
+                os.fsync(f.fileno())  # Force write to disk
 
     def get_stats(self):
         """Get processing statistics"""
@@ -211,118 +233,176 @@ def create_ttl_header(analysis_doc, batch_num):
     image = analysis_doc["image"]
     params = analysis["algorithm_params"]
 
-    # Get dimensions
+    # Get dimensions from algorithm params
     image_width = int(params.get("image_width", 40000))
     image_height = int(params.get("image_height", 40000))
 
-    # Image hash
+    # Get identifiers
     image_hash = get_image_hash(image["imageid"])
-    case_id = params.get("case_id", image["imageid"])
+    image_id = image["imageid"]
+    subject_id = image.get("subject", "")
+    study = image.get("study", "")
+    slide = image.get("slide", "")
 
-    # Extract cancer type if available
-    cancer_type = params.get("cancer_type") or image.get("study")
+    # case_id is crucial - get it from params or use imageid as fallback
+    case_id = params.get("case_id") or image_id
 
-    timestamp = datetime.now(tz=timezone.utc).isoformat()
+    # Get analysis details
+    exec_id = analysis["execution_id"]
+    analysis_id = str(analysis_doc["_id"])
 
-    # TTL header with prefixes
-    ttl_content = """@prefix dc:   <http://purl.org/dc/terms/> .
-@prefix exif: <http://www.w3.org/2003/12/exif/ns#> .
-@prefix geo:  <http://www.opengis.net/ont/geosparql#> .
-@prefix hal:  <https://halcyon.is/ns/> .
-@prefix prov: <http://www.w3.org/ns/prov#> .
-@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
-@prefix sno:  <http://snomed.info/id/> .
-@prefix so:   <https://schema.org/> .
-@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+    # Build TTL string manually
+    ttl_lines = [
+        "# GeoSPARQL representation of pathology image analysis",
+        f"# Analysis ID: {analysis_id}",
+        f"# Execution: {exec_id}",
+        f"# Image: {image_id}",
+        f"# Batch: {batch_num:06d}",
+        "",
+        "@prefix geo: <http://www.opengis.net/ont/geosparql#> .",
+        "@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .",
+        "@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .",
+        "@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .",
+        "@prefix snomed: <http://snomed.info/id/> .",
+        "@prefix loinc: <http://loinc.org/rdf/> .",
+        "@prefix camic: <http://example.org/camic#> .",
+        "",
+    ]
 
-"""
+    # Image description
+    ttl_lines.extend(
+        [
+            f"camic:image_{image_hash}",
+            "    a camic:PathologyImage ;",
+            f'    camic:imageId "{image_id}" ;',
+        ]
+    )
 
-    # Add image object
-    ttl_content += f"""<urn:sha256:{image_hash}>
-        a            so:ImageObject;
-        dc:identifier "{case_id}";
-        exif:height  "{image_height}"^^xsd:int;
-        exif:width   "{image_width}"^^xsd:int .
+    if case_id:
+        ttl_lines.append(f'    camic:caseId "{case_id}" ;')
+    if subject_id:
+        ttl_lines.append(f'    camic:subjectId "{subject_id}" ;')
+    if study:
+        ttl_lines.append(f'    camic:studyId "{study}" ;')
+    if slide:
+        ttl_lines.append(f'    camic:slideId "{slide}" ;')
 
-"""
+    ttl_lines.extend(
+        [
+            f"    camic:imageWidth {image_width} ;",
+            f"    camic:imageHeight {image_height} ;",
+            f'    camic:analysisId "{analysis_id}" ;',
+            "    geo:hasGeometry [",
+            f'        geo:asWKT "POLYGON ((0 0, {image_width} 0, {image_width} {image_height}, 0 {image_height}, 0 0))"^^geo:wktLiteral',
+            "    ] ;",
+            "    camic:hasFeatureCollection [",
+            "        a geo:FeatureCollection ;",
+            "        geo:hasMember",
+        ]
+    )
 
-    # Start feature collection with <> as the subject (self-reference)
-    ttl_content += f"""<>      a                    geo:FeatureCollection;
-        dc:creator           "http://orcid.org/0000-0003-4165-4062";
-        dc:date              "{timestamp}"^^xsd:dateTime;
-        dc:description       "Nuclear segmentation for {case_id} batch {batch_num}";
-        dc:references        "https://doi.org/10.1038/s41597-020-0528-1";
-        dc:title             "nuclear-segmentation-predictions";"""
-
-    # Add execution ID
-    ttl_content += f"""
-        hal:executionId      "{analysis['execution_id']}";"""
-
-    # Add cancer type if available
-    if cancer_type:
-        ttl_content += f"""
-        hal:cancerType       "{cancer_type}";"""
-
-    # Add provenance
-    ttl_content += f"""
-        prov:wasGeneratedBy  [ a                       prov:Activity;
-                               prov:used               <urn:sha256:{image_hash}>;
-                               prov:wasAssociatedWith  <https://github.com/nuclear-segmentation-model>
-                             ];
-"""
-
-    return ttl_content, image_width, image_height
+    return "\n".join(ttl_lines), image_width, image_height
 
 
 def add_mark_to_ttl(mark, image_width, image_height, is_first_feature):
-    """Add mark to TTL string (manual building for clean inline blank nodes)"""
+    """
+    Convert a mark document to TTL string format.
+    Returns (ttl_string, success_bool)
+    """
     try:
-        # Get geometry
-        geometries = mark.get("geometries", {})
-        features = geometries.get("features", [])
+        mark_id = str(mark["_id"])
+        provenance = mark.get("provenance", {})
+        analysis = provenance.get("analysis", {})
+        exec_id = analysis.get("execution_id", "unknown")
+
+        # Get geometry and coordinates
+        geom = mark.get("geometries", {})
+        features = geom.get("features", [])
         if not features:
             return "", False
 
-        geometry = features[0].get("geometry", {})
+        feature = features[0]
+        geometry = feature.get("geometry", {})
+        properties = feature.get("properties", {})
+
+        # Get properties
+        footprint = properties.get("footprint", 0)
+        nucleustype = properties.get("nucleustype", "")
+
+        # Get annotations if any
+        annotations = []
+        user_update = mark.get("userUpdate", {})
+        if "mark" in user_update:
+            annotations = user_update["mark"].get("annotation", [])
+
+        # Check if it's nuclear material
+        is_nuclear_material = False
+        if nucleustype:
+            nucleus_parts = nucleustype.split(".")
+            if len(nucleus_parts) >= 3:
+                # Example: "tumor.ep.1" → tumor cells
+                cell_type = nucleus_parts[0]  # tumor, lymphocyte, etc.
+                is_nuclear_material = True
+
+        # Only add human annotation if one exists AND is valid SNOMED
+        has_valid_annotation = False
+        annotation_code = None
+        if annotations:
+            # Get the first annotation
+            first_annotation = annotations[0]
+            ann_id = first_annotation.get("annotationID")
+            if ann_id and ann_id.startswith("http://snomed.info/id/"):
+                has_valid_annotation = True
+                annotation_code = ann_id
+
+        # Convert geometry
         wkt = polygon_to_wkt(geometry, image_width, image_height)
         if not wkt:
             return "", False
 
-        # Get properties
-        properties = features[0].get("properties", {})
+        # Build mark TTL
+        mark_lines = [
+            "            [",
+            "                a geo:Feature ;",
+            f'                camic:markId "{mark_id}" ;',
+        ]
 
-        # Build feature TTL
-        feature_ttl = ""
+        # Add execution ID
+        mark_lines.append(f'                camic:executionId "{exec_id}" ;')
 
-        # Add separator for multiple features
-        if not is_first_feature:
-            feature_ttl += ";\n"
+        # Add cell type
+        if nucleustype:
+            mark_lines.append(f'                camic:nucleusType "{nucleustype}" ;')
 
-        # Start feature with inline blank node
-        snomed_id = "68841002"
-        feature_ttl += f"""        rdfs:member          [ a                   geo:Feature;
-                               geo:hasGeometry     [ geo:asWKT  "{wkt}" ];
-                               hal:classification  sno:{snomed_id}"""
+        # Add SNOMED code for nuclear material (automatic for all nucleus marks)
+        if is_nuclear_material:
+            mark_lines.append(
+                f"                camic:hasMaterialType snomed:68841002 ;  # Nuclear material"
+            )
 
-        # Add optional properties
-        if "AreaInPixels" in properties:
-            area_pixels = properties["AreaInPixels"]
-            feature_ttl += f""";
-                               hal:areaInPixels    "{int(area_pixels)}"^^xsd:int"""
+        # Only add human annotation if it exists and is valid
+        if has_valid_annotation and annotation_code:
+            mark_lines.append(
+                f"                camic:hasAnnotation <{annotation_code}> ;  # Human-verified SNOMED code"
+            )
 
-        if "PhysicalSize" in properties:
-            physical_size = properties["PhysicalSize"]
-            feature_ttl += f""";
-                               hal:physicalSize    "{float(physical_size):.6f}"^^xsd:float"""
+        # Add numeric properties
+        mark_lines.append(f"                camic:footprint {footprint} ;")
 
-        # Add measurement WITHOUT classification (single-class scenario)
-        feature_ttl += """;
-                               hal:measurement     [ hal:hasProbability  "1.0"^^xsd:float ]
-                             ]"""
+        # Add geometry (no trailing semicolon - this is the last property)
+        mark_lines.extend(
+            [
+                "                geo:hasGeometry [",
+                f'                    geo:asWKT "{wkt}"^^geo:wktLiteral',
+                "                ]",
+                "            ]",
+            ]
+        )
 
-        return feature_ttl, True
+        return "\n".join(mark_lines), True
 
-    except Exception:
+    except Exception as e:
+        # Silently skip malformed marks
         return "", False
 
 
@@ -330,17 +410,15 @@ def add_mark_to_ttl(mark, image_width, image_height, is_first_feature):
 # 👷 WORKER PROCESS FUNCTION
 # =====================
 def process_analysis_worker(args):
-    """Worker function that processes a single analysis.
-
-    This version:
-    - Uses an index-friendly query (slide + execution_id) when possible.
-    - Drops the upfront count_documents() and just counts as it streams.
-    - Emits detailed logging so we can see where time is going.
+    """
+    Worker function - processes one analysis document.
+    Each worker gets its own MongoDB connection.
     """
     worker_id, analysis_doc, checkpoint_dir = args
 
     logger = setup_worker_logger(worker_id)
 
+    # Get IDs for logging
     analysis = analysis_doc.get("analysis", {})
     image = analysis_doc.get("image", {})
 
@@ -353,83 +431,67 @@ def process_analysis_worker(args):
 
     try:
         start_time = time.time()
-        logger.info("Connecting to MongoDB for %s:%s", exec_id, img_id)
 
-        # Fresh Mongo connection per worker
+        # Initialize checkpoint manager
+        checkpoint = ParallelCheckpointManager(checkpoint_dir)
+
+        # Try to mark in progress - if this fails, continue anyway
+        try:
+            checkpoint.mark_in_progress(analysis_id, worker_id)
+        except Exception as e:
+            logger.warning(f"Could not mark {analysis_id} in progress: {e}")
+            # Continue anyway - the important part is processing the data
+
+        # Create MongoDB connection (each worker gets its own)
         with mongo_connection(f"mongodb://{MONGO_HOST}:{MONGO_PORT}/", MONGO_DB) as db:
-            logger.info("MongoDB connection established for %s:%s", exec_id, img_id)
 
-            # Build query – prefer slide+execution_id to hit existing index:
-            # { 'provenance.image.slide': 1, 'provenance.analysis.execution_id': 1, ... }
+            # Query for marks that belong to this analysis
+            query = {
+                "provenance.analysis.execution_id": exec_id,
+                "provenance.image.imageid": img_id,
+            }
+
+            # Add slide filter if available (helps with index selectivity)
             if slide:
-                query = {
-                    "provenance.image.slide": slide,
-                    "provenance.analysis.execution_id": exec_id,
-                }
-                logger.info(
-                    "Using indexed query on slide+execution_id for %s:%s (slide=%s)",
-                    exec_id,
-                    img_id,
-                    slide,
-                )
-            else:
-                # Fallback: imageid (no good index; warn loudly)
-                query = {
-                    "provenance.analysis.execution_id": exec_id,
-                    "provenance.image.imageid": img_id,
-                }
-                logger.warning(
-                    "No slide field on analysis_doc for %s:%s; falling back to "
-                    "imageid-based query (may be slow)",
-                    exec_id,
-                    img_id,
-                )
+                query["provenance.image.slide"] = slide
 
-            # Stream marks cursor
-            logger.info("Starting mark stream for %s:%s", exec_id, img_id)
-            marks_cursor = db.mark.find(query, no_cursor_timeout=True).batch_size(100)
+            logger.info("Streaming marks for %s:%s", exec_id, img_id)
 
-            processed = 0  # marks that actually became features
-            mark_counter = 0  # all marks seen
-            batch_marks = 0  # marks in current TTL batch
-            batch_num = 1
-
-            # Start TTL content with header (manual string building)
-            ttl_content, img_width, img_height = create_ttl_header(
-                analysis_doc, batch_num
-            )
-            is_first_feature = True
+            # Stream marks from MongoDB
+            marks_cursor = db.mark.find(query, batch_size=5000, no_cursor_timeout=False)
 
             try:
-                for mark in marks_cursor:
-                    mark_counter += 1
+                batch_num = 1
+                batch_marks = 0
+                processed = 0
+                is_first_feature = True
 
-                    # Add mark to TTL string
-                    feature_ttl, success = add_mark_to_ttl(
+                # Start first batch
+                ttl_content, img_width, img_height = create_ttl_header(
+                    analysis_doc, batch_num
+                )
+
+                for mark in marks_cursor:
+                    # Convert mark to TTL
+                    mark_ttl, success = add_mark_to_ttl(
                         mark, img_width, img_height, is_first_feature
                     )
                     if success:
-                        ttl_content += feature_ttl
-                        is_first_feature = False
-                        processed += 1
+                        # Add semicolon after previous mark if this isn't the first
+                        if not is_first_feature:
+                            ttl_content += " ;\n"
+
+                        ttl_content += mark_ttl
                         batch_marks += 1
+                        processed += 1
+                        is_first_feature = False
 
-                    # Heartbeat every 100k processed marks
-                    if processed and processed % 100_000 == 0:
-                        logger.info(
-                            "Still processing %s:%s – %s marks processed so far "
-                            "(%s seen total)",
-                            exec_id,
-                            img_id,
-                            f"{processed:,}",
-                            f"{mark_counter:,}",
-                        )
-
-                    # When batch is full, flush TTL
+                    # Write batch when full
                     if batch_marks >= BATCH_SIZE:
-                        # Close the feature collection
+                        # Close the last mark and the feature collection (no semicolon on last item)
                         ttl_content += " .\n"
 
+                        # Write compressed TTL file
                         output_file = (
                             OUTPUT_DIR
                             / str(exec_id)
@@ -447,13 +509,11 @@ def process_analysis_worker(args):
                             f.write(ttl_content)
 
                         logger.info(
-                            "Wrote batch %d for %s:%s → %s (%s marks in this batch, %s total)",
+                            "Wrote batch %d for %s:%s (%s marks)",
                             batch_num,
                             exec_id,
                             img_id,
-                            output_file,
-                            f"{batch_marks:,}",
-                            f"{processed:,}",
+                            batch_marks,
                         )
 
                         batch_num += 1
@@ -467,7 +527,7 @@ def process_analysis_worker(args):
 
                 # After loop: flush any remaining marks
                 if batch_marks > 0:
-                    # Close the feature collection
+                    # Close the last mark and the feature collection (no semicolon on last item)
                     ttl_content += " .\n"
 
                     output_file = (
@@ -510,6 +570,13 @@ def process_analysis_worker(args):
                 batch_num,
                 elapsed,
             )
+
+            # Try to mark as completed
+            try:
+                checkpoint.mark_completed(analysis_id)
+            except Exception as e:
+                logger.warning(f"Could not mark {analysis_id} as completed: {e}")
+
             return ("completed", analysis_id, processed, batch_num)
 
     except Exception as e:
@@ -521,6 +588,14 @@ def process_analysis_worker(args):
             e,
             exc_info=True,
         )
+
+        # Try to mark as failed
+        try:
+            checkpoint = ParallelCheckpointManager(checkpoint_dir)
+            checkpoint.mark_failed(analysis_id, str(e))
+        except:
+            pass
+
         return ("failed", analysis_id, 0, 0, str(e))
 
 
@@ -591,7 +666,7 @@ def main():
                     worker_args = []
                     for i, doc in enumerate(chunk_docs):
                         worker_id = i % NUM_WORKERS
-                        worker_args.append((worker_id, doc, CHECKPOINT_DIR))
+                        worker_args.append((worker_id, doc, str(CHECKPOINT_DIR)))
 
                     chunk_index = chunk_start // chunk_size + 1
                     main_logger.info(
@@ -614,7 +689,6 @@ def main():
 
                         if status == "completed":
                             _, analysis_id, mark_count, batch_count = result[:4]
-                            checkpoint.mark_completed(analysis_id)
                             total_processed += 1
                             total_marks += mark_count
 
