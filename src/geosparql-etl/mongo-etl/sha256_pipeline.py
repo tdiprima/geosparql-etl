@@ -78,6 +78,6 @@ if __name__ == "__main__":
         print(f"SHA256 hash for node 7: {result}")
     except FileNotFoundError as e:
         print(f"Error: {e}")
-        print("Please check your path mapping configuration or update the file path in Drupal.")
+        # add a "hal:missing true" triple
     except Exception as e:
         print(f"An unexpected error occurred: {e}")
