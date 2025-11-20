@@ -265,37 +265,37 @@ def create_ttl_header(analysis_doc, batch_num):
         "@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .",
         "@prefix snomed: <http://snomed.info/id/> .",
         "@prefix loinc: <http://loinc.org/rdf/> .",
-        "@prefix mydb: <http://example.org/mydb#> .",
+        "@prefix hal: <https://halcyon.is/ns/> .",
         "",
     ]
 
     # Image description
     ttl_lines.extend(
         [
-            f"mydb:image_{image_hash}",
-            "    a mydb:PathologyImage ;",
-            f'    mydb:imageId "{image_id}" ;',
+            f"<urn:sha256:{image_hash}>",
+            "    a hal:PathologyImage ;",
+            f'    hal:imageId "{image_id}" ;',
         ]
     )
 
     if case_id:
-        ttl_lines.append(f'    mydb:caseId "{case_id}" ;')
+        ttl_lines.append(f'    hal:caseId "{case_id}" ;')
     if subject_id:
-        ttl_lines.append(f'    mydb:subjectId "{subject_id}" ;')
+        ttl_lines.append(f'    hal:subjectId "{subject_id}" ;')
     if study:
-        ttl_lines.append(f'    mydb:studyId "{study}" ;')
+        ttl_lines.append(f'    hal:studyId "{study}" ;')
     if slide:
-        ttl_lines.append(f'    mydb:slideId "{slide}" ;')
+        ttl_lines.append(f'    hal:slideId "{slide}" ;')
 
     ttl_lines.extend(
         [
-            f"    mydb:imageWidth {image_width} ;",
-            f"    mydb:imageHeight {image_height} ;",
-            f'    mydb:analysisId "{analysis_id}" ;',
+            f"    hal:imageWidth {image_width} ;",
+            f"    hal:imageHeight {image_height} ;",
+            f'    hal:analysisId "{analysis_id}" ;',
             "    geo:hasGeometry [",
             f'        geo:asWKT "POLYGON ((0 0, {image_width} 0, {image_width} {image_height}, 0 {image_height}, 0 0))"^^geo:wktLiteral',
             "    ] ;",
-            "    mydb:hasFeatureCollection [",
+            "    hal:hasFeatureCollection [",
             "        a geo:FeatureCollection",
         ]
     )
@@ -364,30 +364,30 @@ def add_mark_to_ttl(mark, image_width, image_height, is_first_feature):
             " ;",  # Semicolon to continue from previous line
             "        geo:hasMember [",
             "            a geo:Feature ;",
-            f'            mydb:markId "{mark_id}" ;',
+            f'            hal:markId "{mark_id}" ;',
         ]
 
         # Add execution ID
-        mark_lines.append(f'            mydb:executionId "{exec_id}" ;')
+        mark_lines.append(f'            hal:executionId "{exec_id}" ;')
 
         # Add cell type
         if nucleustype:
-            mark_lines.append(f'            mydb:nucleusType "{nucleustype}" ;')
+            mark_lines.append(f'            hal:nucleusType "{nucleustype}" ;')
 
         # Add SNOMED code for nuclear material (automatic for all nucleus marks)
         if is_nuclear_material:
             mark_lines.append(
-                "            mydb:hasMaterialType snomed:68841002 ;  # Nuclear material"
+                "            hal:hasMaterialType snomed:68841002 ;  # Nuclear material"
             )
 
         # Only add human annotation if it exists and is valid
         if has_valid_annotation and annotation_code:
             mark_lines.append(
-                f"            mydb:hasAnnotation <{annotation_code}> ;  # Human-verified SNOMED code"
+                f"            hal:hasAnnotation <{annotation_code}> ;  # Human-verified SNOMED code"
             )
 
         # Add numeric properties
-        mark_lines.append(f"            mydb:footprint {footprint} ;")
+        mark_lines.append(f"            hal:footprint {footprint} ;")
 
         # Add geometry (no trailing semicolon - this is the last property)
         mark_lines.extend(
