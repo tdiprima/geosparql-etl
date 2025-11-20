@@ -6,15 +6,15 @@ Author: Bear 🐻
 """
 
 import gzip
+import logging
 import re
 import time
-from pathlib import Path
-import logging
-from datetime import datetime
 from contextlib import contextmanager
-from multiprocessing import Pool, Manager, cpu_count
+from datetime import datetime
+from multiprocessing import Manager, Pool
+from pathlib import Path
 
-from sha256_pipeline import get_real_hash_from_node, get_auth
+from sha256_pipeline import get_auth, get_real_hash_from_node
 
 # Configuration
 TTL_OUTPUT_DIR = Path("ttl_output")
@@ -23,13 +23,16 @@ NUM_WORKERS = 20  # Use 20 cores for processing, leave 4 for system/MongoDB
 # Setup logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
+    format="%(asctime)s - %(levelname)s - %(message)s",
     handlers=[
-        logging.FileHandler(f'update_ttl_hashes_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'),
-        logging.StreamHandler()
-    ]
+        logging.FileHandler(
+            f'update_ttl_hashes_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
+        ),
+        logging.StreamHandler(),
+    ],
 )
 logger = logging.getLogger(__name__)
+
 
 @contextmanager
 def timer(name):
@@ -39,6 +42,7 @@ def timer(name):
     yield
     elapsed = time.time() - start
     logger.info(f"Completed {name} in {elapsed:.2f} seconds ({elapsed/60:.2f} minutes)")
+
 
 def extract_slide_id_and_hash(content):
     """
@@ -53,13 +57,14 @@ def extract_slide_id_and_hash(content):
     slide_id = int(slide_match.group(1))
 
     # Look for <urn:sha256:{hash}>
-    hash_match = re.search(r'<urn:sha256:([0-9a-f]{64})>', content)
+    hash_match = re.search(r"<urn:sha256:([0-9a-f]{64})>", content)
     if not hash_match:
         return slide_id, None
 
     old_hash = hash_match.group(1)
 
     return slide_id, old_hash
+
 
 def get_correct_hash(slide_id, auth, hash_cache, failed_nodes):
     """
@@ -79,9 +84,10 @@ def get_correct_hash(slide_id, auth, hash_cache, failed_nodes):
         correct_hash = get_real_hash_from_node(slide_id, auth=auth)
         hash_cache[slide_id] = correct_hash
         return correct_hash
-    except Exception as e:
+    except Exception:
         failed_nodes[slide_id] = True  # Mark as failed in shared dict
         return None
+
 
 def update_hash_in_content(content, old_hash, new_hash):
     """
@@ -95,6 +101,7 @@ def update_hash_in_content(content, old_hash, new_hash):
 
     return updated_content
 
+
 def process_ttl_file_worker(args):
     """
     Worker function to process a single TTL.gz file.
@@ -104,7 +111,7 @@ def process_ttl_file_worker(args):
 
     try:
         # Read compressed file
-        with gzip.open(file_path, 'rt', encoding='utf-8') as f:
+        with gzip.open(file_path, "rt", encoding="utf-8") as f:
             content = f.read()
 
         # Extract slide_id and current hash
@@ -132,13 +139,14 @@ def process_ttl_file_worker(args):
         updated_content = update_hash_in_content(content, old_hash, correct_hash)
 
         # Write back to file (compressed)
-        with gzip.open(file_path, 'wt', encoding='utf-8') as f:
+        with gzip.open(file_path, "wt", encoding="utf-8") as f:
             f.write(updated_content)
 
         return True, True, slide_id, str(file_path)
 
     except Exception as e:
         return False, False, None, f"ERROR: {file_path}: {e}"
+
 
 def main():
     """Main function to process all TTL files in parallel"""
@@ -175,7 +183,9 @@ def main():
         failed_nodes = manager.dict()
 
         # Prepare worker arguments
-        worker_args = [(file_path, auth, hash_cache, failed_nodes) for file_path in ttl_files]
+        worker_args = [
+            (file_path, auth, hash_cache, failed_nodes) for file_path in ttl_files
+        ]
 
         # Process files in parallel
         total_files = len(ttl_files)
@@ -186,7 +196,12 @@ def main():
 
         with Pool(processes=NUM_WORKERS) as pool:
             chunk_size = 1000
-            for i, result in enumerate(pool.imap_unordered(process_ttl_file_worker, worker_args, chunksize=chunk_size), 1):
+            for i, result in enumerate(
+                pool.imap_unordered(
+                    process_ttl_file_worker, worker_args, chunksize=chunk_size
+                ),
+                1,
+            ):
                 success, was_updated, slide_id, file_info = result
 
                 if success:
@@ -204,12 +219,14 @@ def main():
                     elapsed = time.time() - start_time
                     rate = i / elapsed if elapsed > 0 else 0
                     eta_seconds = (total_files - i) / rate if rate > 0 else 0
-                    logger.info(f"Progress: {i:,}/{total_files:,} files "
-                               f"({100*i/total_files:.1f}%) | "
-                               f"Updated: {updated:,} | "
-                               f"Cached hashes: {len(hash_cache)} | "
-                               f"Rate: {rate:.0f} files/sec | "
-                               f"ETA: {eta_seconds/60:.1f} min")
+                    logger.info(
+                        f"Progress: {i:,}/{total_files:,} files "
+                        f"({100*i/total_files:.1f}%) | "
+                        f"Updated: {updated:,} | "
+                        f"Cached hashes: {len(hash_cache)} | "
+                        f"Rate: {rate:.0f} files/sec | "
+                        f"ETA: {eta_seconds/60:.1f} min"
+                    )
 
         # Summary
         logger.info("=" * 80)
@@ -223,6 +240,7 @@ def main():
         logger.info(f"  Hashes cached: {len(hash_cache)}")
         logger.info(f"  Failed node lookups: {len(failed_nodes)}")
         logger.info("=" * 80)
+
 
 if __name__ == "__main__":
     start_time = time.time()

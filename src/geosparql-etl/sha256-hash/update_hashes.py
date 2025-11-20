@@ -5,24 +5,26 @@ Author: Bear 🐻
 """
 
 import gzip
+import logging
 import re
 import time
-from pathlib import Path
-import logging
-from datetime import datetime
-from contextlib import contextmanager
 from collections import defaultdict
+from contextlib import contextmanager
+from datetime import datetime
+from pathlib import Path
 
-from sha256_pipeline import get_real_hash_from_node, get_auth
+from sha256_pipeline import get_auth, get_real_hash_from_node
 
 # Setup logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
+    format="%(asctime)s - %(levelname)s - %(message)s",
     handlers=[
-        logging.FileHandler(f'update_ttl_hashes_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'),
-        logging.StreamHandler()
-    ]
+        logging.FileHandler(
+            f'update_ttl_hashes_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
+        ),
+        logging.StreamHandler(),
+    ],
 )
 logger = logging.getLogger(__name__)
 
@@ -33,6 +35,7 @@ TTL_OUTPUT_DIR = Path("ttl_output")
 hash_cache = {}
 failed_nodes = set()
 
+
 @contextmanager
 def timer(name):
     """Context manager to time operations"""
@@ -41,6 +44,7 @@ def timer(name):
     yield
     elapsed = time.time() - start
     logger.info(f"Completed {name} in {elapsed:.2f} seconds ({elapsed/60:.2f} minutes)")
+
 
 def extract_slide_id_and_hash(content):
     """
@@ -55,13 +59,14 @@ def extract_slide_id_and_hash(content):
     slide_id = int(slide_match.group(1))
 
     # Look for <urn:sha256:{hash}>
-    hash_match = re.search(r'<urn:sha256:([0-9a-f]{64})>', content)
+    hash_match = re.search(r"<urn:sha256:([0-9a-f]{64})>", content)
     if not hash_match:
         return slide_id, None
 
     old_hash = hash_match.group(1)
 
     return slide_id, old_hash
+
 
 def get_correct_hash(slide_id, auth):
     """
@@ -87,6 +92,7 @@ def get_correct_hash(slide_id, auth):
         failed_nodes.add(slide_id)
         return None
 
+
 def update_hash_in_content(content, old_hash, new_hash):
     """
     Replace old hash with new hash in TTL content.
@@ -99,6 +105,7 @@ def update_hash_in_content(content, old_hash, new_hash):
 
     return updated_content
 
+
 def process_ttl_file(file_path, auth):
     """
     Process a single TTL.gz file.
@@ -106,14 +113,16 @@ def process_ttl_file(file_path, auth):
     """
     try:
         # Read compressed file
-        with gzip.open(file_path, 'rt', encoding='utf-8') as f:
+        with gzip.open(file_path, "rt", encoding="utf-8") as f:
             content = f.read()
 
         # Extract slide_id and current hash
         slide_id, old_hash = extract_slide_id_and_hash(content)
 
         if slide_id is None:
-            logger.warning(f"No slideId found in {file_path.relative_to(TTL_OUTPUT_DIR)}")
+            logger.warning(
+                f"No slideId found in {file_path.relative_to(TTL_OUTPUT_DIR)}"
+            )
             return True, False, None
 
         if old_hash is None:
@@ -136,15 +145,18 @@ def process_ttl_file(file_path, auth):
         updated_content = update_hash_in_content(content, old_hash, correct_hash)
 
         # Write back to file (compressed)
-        with gzip.open(file_path, 'wt', encoding='utf-8') as f:
+        with gzip.open(file_path, "wt", encoding="utf-8") as f:
             f.write(updated_content)
 
-        logger.info(f"Updated hash in {file_path.relative_to(TTL_OUTPUT_DIR)} (slide {slide_id})")
+        logger.info(
+            f"Updated hash in {file_path.relative_to(TTL_OUTPUT_DIR)} (slide {slide_id})"
+        )
         return True, True, slide_id
 
     except Exception as e:
         logger.error(f"Error processing {file_path}: {e}")
         return False, False, None
+
 
 def main():
     """Main function to process all TTL files"""
@@ -183,8 +195,10 @@ def main():
 
     for i, file_path in enumerate(ttl_files, 1):
         if i % 100 == 0:
-            logger.info(f"Progress: {i}/{total_files} files processed... "
-                       f"(updated: {updated}, cached hashes: {len(hash_cache)})")
+            logger.info(
+                f"Progress: {i}/{total_files} files processed... "
+                f"(updated: {updated}, cached hashes: {len(hash_cache)})"
+            )
 
         success, was_updated, slide_id = process_ttl_file(file_path, auth)
 
@@ -209,6 +223,7 @@ def main():
     logger.info(f"  Hashes cached: {len(hash_cache)}")
     logger.info(f"  Failed node lookups: {len(failed_nodes)}")
     logger.info("=" * 80)
+
 
 if __name__ == "__main__":
     with timer("TTL Hash Update"):
