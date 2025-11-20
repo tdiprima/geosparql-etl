@@ -311,6 +311,7 @@ def create_ttl_header(analysis_doc, batch_num, auth=None, hash_cache=None, faile
         "@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .",
         "@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .",
         "@prefix snomed: <http://snomed.info/id/> .",
+        "@prefix so:   <https://schema.org/> .",
         "@prefix loinc: <http://loinc.org/rdf/> .",
         "@prefix hal: <https://halcyon.is/ns/> .",
         "",
@@ -320,7 +321,7 @@ def create_ttl_header(analysis_doc, batch_num, auth=None, hash_cache=None, faile
     ttl_lines.extend(
         [
             f"<urn:sha256:{image_hash}>",
-            "    a hal:PathologyImage ;",
+            "    a so:ImageObject ;",
             f'    hal:imageId "{image_id}" ;',
         ]
     )
