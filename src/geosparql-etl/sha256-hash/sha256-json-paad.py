@@ -1,8 +1,9 @@
+#!/usr/bin/env python3
 """
 Update TTL files with SHA256 hashes from corresponding SVS files.
 
 This script:
-1. Reads TTL filenames from /path/to/results/geosparql_output
+1. Reads TTL filenames from ~/tammy/test_wsinfer/results/geosparql_output
 2. For each TTL file, computes SHA256 of the corresponding SVS file
 3. Updates the TTL file:
    - Replaces urn:md5: with urn:sha256:
@@ -86,8 +87,8 @@ def update_ttl_file(ttl_path: Path, sha256_hash: Optional[str]) -> None:
 def main():
     """Main processing function."""
     # Define paths
-    ttl_dir = Path.home() / "path" / "to" / "results" / "geosparql_output"
-    svs_base_dir = Path("/path/to/tcga_data/paad")
+    ttl_dir = Path.home() / "tammy" / "test_wsinfer" / "results" / "geosparql_output"
+    svs_base_dir = Path("/data/quip_distro/images/tcga_data/paad")
 
     if not ttl_dir.exists():
         print(f"Error: TTL directory not found: {ttl_dir}")
