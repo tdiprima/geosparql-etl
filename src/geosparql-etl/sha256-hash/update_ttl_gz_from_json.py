@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Update .ttl.gz files with SHA256 hashes from JSON file.
 
