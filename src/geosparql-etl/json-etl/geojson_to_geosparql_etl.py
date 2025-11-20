@@ -238,7 +238,7 @@ def main():
     """Main entry point for the ETL script."""
 
     # Configuration
-    INPUT_DIR = "./geojson_files"  # Directory containing your 400 GeoJSON files
+    INPUT_DIR = "./geojson_files"  # Directory containing your 471 GeoJSON files
     OUTPUT_DIR = "./geosparql_output"  # Directory for output TTL files
 
     print("GeoJSON to GeoSPARQL ETL Converter")
@@ -247,36 +247,7 @@ def main():
     print(f"Output directory: {OUTPUT_DIR}")
     print()
 
-    # Process single file example (for testing)
-    test_mode = False
-
-    if test_mode:
-        # Test with a single file
-        test_file = (
-            "TCGA-IB-7887-01A-01-TS1.8ce76657-42b6-48a8-ba12-c2b697173e10.geojson"
-        )
-        test_path = Path(INPUT_DIR) / test_file
-
-        if test_path.exists():
-            print(f"Testing with: {test_file}")
-            with open(test_path, "r") as f:
-                geojson_data = json.load(f)
-
-            ttl_content = create_geosparql_ttl(geojson_data, test_file, OUTPUT_DIR)
-
-            # Save test output
-            output_path = Path(OUTPUT_DIR) / (test_path.stem + "_test.ttl")
-            Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
-
-            with open(output_path, "w", encoding="utf-8") as f:
-                f.write(ttl_content)
-
-            print(f"Test output saved to: {output_path}")
-            print("\nFirst 2000 characters of output:")
-            print(ttl_content[:2000])
-    else:
-        # Process all files
-        process_directory(INPUT_DIR, OUTPUT_DIR)
+    process_directory(INPUT_DIR, OUTPUT_DIR)
 
 
 if __name__ == "__main__":
