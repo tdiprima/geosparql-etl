@@ -123,53 +123,54 @@ class FastMarkRecoveryAnalyzer:
 
             # Quick sampling to estimate marks per analysis
             logger.info("Estimating marks per analysis using sampling...")
-            sample_pipeline = [
-                {"$sample": {"size": 10}},  # Just sample 10 analyses
-                {
-                    "$lookup": {
-                        "from": "mark",
-                        "let": {
-                            "exec_id": "$analysis.execution_id",
-                            "img_id": "$image.imageid",
-                        },
-                        "pipeline": [
-                            {
-                                "$match": {
-                                    "$expr": {
-                                        "$and": [
-                                            {
-                                                "$eq": [
-                                                    "$provenance.analysis.execution_id",
-                                                    "$$exec_id",
-                                                ]
-                                            },
-                                            {
-                                                "$eq": [
-                                                    "$provenance.image.imageid",
-                                                    "$$img_id",
-                                                ]
-                                            },
-                                        ]
-                                    }
-                                }
-                            },
-                            {"$count": "mark_count"},
-                        ],
-                        "as": "mark_info",
-                    }
-                },
-                {
-                    "$project": {
-                        "_id": 1,
-                        "mark_count": {
-                            "$ifNull": [
-                                {"$arrayElemAt": ["$mark_info.mark_count", 0]},
-                                0,
-                            ]
-                        },
-                    }
-                },
-            ]
+            sample_pipeline = []
+            # sample_pipeline = [
+            #     {"$sample": {"size": 10}},  # Just sample 10 analyses
+            #     {
+            #         "$lookup": {
+            #             "from": "mark",
+            #             "let": {
+            #                 "exec_id": "$analysis.execution_id",
+            #                 "img_id": "$image.imageid",
+            #             },
+            #             "pipeline": [
+            #                 {
+            #                     "$match": {
+            #                         "$expr": {
+            #                             "$and": [
+            #                                 {
+            #                                     "$eq": [
+            #                                         "$provenance.analysis.execution_id",
+            #                                         "$$exec_id",
+            #                                     ]
+            #                                 },
+            #                                 {
+            #                                     "$eq": [
+            #                                         "$provenance.image.imageid",
+            #                                         "$$img_id",
+            #                                     ]
+            #                                 },
+            #                             ]
+            #                         }
+            #                     }
+            #                 },
+            #                 {"$count": "mark_count"},
+            #             ],
+            #             "as": "mark_info",
+            #         }
+            #     },
+            #     {
+            #         "$project": {
+            #             "_id": 1,
+            #             "mark_count": {
+            #                 "$ifNull": [
+            #                     {"$arrayElemAt": ["$mark_info.mark_count", 0]},
+            #                     0,
+            #                 ]
+            #             },
+            #         }
+            #     },
+            # ]
 
             try:
                 logger.info("Running aggregation pipeline...")
