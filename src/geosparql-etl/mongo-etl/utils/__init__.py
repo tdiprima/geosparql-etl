@@ -35,7 +35,7 @@ from .serialization import (MongoJSONEncoder, clean_mongo_document,
                             serialize_mongo_document,
                             serialize_mongo_documents, str_to_objectid)
 
-__version__ = "0.1.2"
+__version__ = "0.1.3"
 
 __all__ = [
     # mongo_client
