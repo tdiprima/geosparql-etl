@@ -13,7 +13,7 @@ import signal
 import sys
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from multiprocessing import Pool
 from pathlib import Path
@@ -377,7 +377,7 @@ def add_mark_to_ttl(mark, image_width, image_height, is_first_feature):
         # Add SNOMED code for nuclear material (automatic for all nucleus marks)
         if is_nuclear_material:
             mark_lines.append(
-                f"            camic:hasMaterialType snomed:68841002 ;  # Nuclear material"
+                "            camic:hasMaterialType snomed:68841002 ;  # Nuclear material"
             )
 
         # Only add human annotation if it exists and is valid
@@ -401,7 +401,7 @@ def add_mark_to_ttl(mark, image_width, image_height, is_first_feature):
 
         return "\n".join(mark_lines), True
 
-    except Exception as e:
+    except Exception:
         # Silently skip malformed marks
         return "", False
 
