@@ -15,13 +15,14 @@ import threading
 import time
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
-from multiprocessing import Pool
+from multiprocessing import Pool, Manager
 from pathlib import Path
 
 # Add parent directory to path to import utils
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from utils import mongo_connection
+from sha256_pipeline import get_real_hash_from_node, get_auth
 
 # =====================
 # 📧 CONFIG - OPTIMIZED FOR PARALLEL PROCESSING
@@ -197,8 +198,41 @@ class ParallelCheckpointManager:
 
 
 def get_image_hash(image_id):
-    """Generate SHA-256 hash for image ID."""
+    """Generate SHA-256 hash for image ID (fallback method)."""
     return hashlib.sha256(image_id.encode()).hexdigest()
+
+
+def get_real_image_hash(slide_id, auth, hash_cache, failed_nodes):
+    """
+    Get the real SHA256 hash from the actual image file via Drupal.
+    Uses shared cache to avoid redundant lookups.
+    Returns (hash_string, success_bool)
+    """
+    if not slide_id:
+        return None, False
+
+    # Convert slide_id to int if it's a string
+    try:
+        slide_id = int(slide_id)
+    except (ValueError, TypeError):
+        return None, False
+
+    # Check cache first
+    if slide_id in hash_cache:
+        return hash_cache[slide_id], True
+
+    # Check if we've already failed on this node
+    if slide_id in failed_nodes:
+        return None, False
+
+    # Try to get the real hash from Drupal
+    try:
+        real_hash = get_real_hash_from_node(slide_id, auth=auth)
+        hash_cache[slide_id] = real_hash
+        return real_hash, True
+    except Exception:
+        failed_nodes[slide_id] = True
+        return None, False
 
 
 def polygon_to_wkt(geometry, image_width, image_height):
@@ -227,7 +261,7 @@ def polygon_to_wkt(geometry, image_width, image_height):
         return None
 
 
-def create_ttl_header(analysis_doc, batch_num):
+def create_ttl_header(analysis_doc, batch_num, auth=None, hash_cache=None, failed_nodes=None):
     """Create TTL header as string (manual building for clean output)"""
     analysis = analysis_doc["analysis"]
     image = analysis_doc["image"]
@@ -238,11 +272,24 @@ def create_ttl_header(analysis_doc, batch_num):
     image_height = int(params.get("image_height", 40000))
 
     # Get identifiers
-    image_hash = get_image_hash(image["imageid"])
     image_id = image["imageid"]
     subject_id = image.get("subject", "")
     study = image.get("study", "")
     slide = image.get("slide", "")
+
+    # Get the real image hash using slide_id and sha256_pipeline
+    image_hash = None
+    hash_missing = False
+    if slide and auth and hash_cache is not None and failed_nodes is not None:
+        real_hash, success = get_real_image_hash(slide, auth, hash_cache, failed_nodes)
+        if success:
+            image_hash = real_hash
+        else:
+            hash_missing = True
+
+    # Fallback to hashing image_id if real hash not available
+    if not image_hash:
+        image_hash = get_image_hash(image_id)
 
     # case_id is crucial - get it from params or use imageid as fallback
     case_id = params.get("case_id") or image_id
@@ -286,6 +333,10 @@ def create_ttl_header(analysis_doc, batch_num):
         ttl_lines.append(f'    hal:studyId "{study}" ;')
     if slide:
         ttl_lines.append(f'    hal:slideId "{slide}" ;')
+
+    # Mark if hash is missing (couldn't get real file hash from Drupal)
+    if hash_missing:
+        ttl_lines.append('    hal:hashMissing "true"^^xsd:boolean ;')
 
     ttl_lines.extend(
         [
@@ -414,7 +465,7 @@ def process_analysis_worker(args):
     Worker function - processes one analysis document.
     Each worker gets its own MongoDB connection.
     """
-    worker_id, analysis_doc, checkpoint_dir = args
+    worker_id, analysis_doc, checkpoint_dir, auth, hash_cache, failed_nodes = args
 
     logger = setup_worker_logger(worker_id)
 
@@ -468,7 +519,7 @@ def process_analysis_worker(args):
 
                 # Start first batch
                 ttl_content, img_width, img_height = create_ttl_header(
-                    analysis_doc, batch_num
+                    analysis_doc, batch_num, auth, hash_cache, failed_nodes
                 )
 
                 for mark in marks_cursor:
@@ -521,7 +572,7 @@ def process_analysis_worker(args):
 
                         # Start new TTL content with new header
                         ttl_content, img_width, img_height = create_ttl_header(
-                            analysis_doc, batch_num
+                            analysis_doc, batch_num, auth, hash_cache, failed_nodes
                         )
                         is_first_feature = True
 
@@ -610,7 +661,17 @@ def main():
     main_logger.info(f"PARALLEL ETL - Using {NUM_WORKERS} cores")
     main_logger.info(f"MongoDB: {MONGO_HOST}:{MONGO_PORT}/{MONGO_DB}")
     main_logger.info("Output: Compressed TTL files (.ttl.gz)")
+    main_logger.info("Using sha256_pipeline for real image hashes")
     main_logger.info("=" * 60)
+
+    # Get Drupal authentication
+    try:
+        auth = get_auth()
+        main_logger.info("✓ Drupal authentication configured")
+    except Exception as e:
+        main_logger.warning(f"⚠️ Drupal authentication failed: {e}")
+        main_logger.warning("Will use fallback hash method (hash of image_id)")
+        auth = None
 
     # Initialize checkpoint manager
     checkpoint = ParallelCheckpointManager(CHECKPOINT_DIR)
@@ -644,120 +705,130 @@ def main():
         total_marks = 0
         start_time = time.time()
 
-        # Create process pool
-        with Pool(processes=NUM_WORKERS) as pool:
-            try:
-                for chunk_start in range(0, len(analyses_to_process), chunk_size):
-                    chunk_ids = analyses_to_process[
-                        chunk_start : chunk_start + chunk_size
-                    ]
+        # Create shared hash cache using Manager
+        with Manager() as manager:
+            hash_cache = manager.dict()
+            failed_nodes = manager.dict()
 
-                    # Fetch full documents for this chunk
-                    chunk_docs = []
-                    for analysis_doc in db.analysis.find({"_id": {"$in": chunk_ids}}):
-                        chunk_docs.append(analysis_doc)
+            # Create process pool
+            with Pool(processes=NUM_WORKERS) as pool:
+                try:
+                    for chunk_start in range(0, len(analyses_to_process), chunk_size):
+                        chunk_ids = analyses_to_process[
+                            chunk_start : chunk_start + chunk_size
+                        ]
 
-                    if not chunk_docs:
-                        continue
+                        # Fetch full documents for this chunk
+                        chunk_docs = []
+                        for analysis_doc in db.analysis.find({"_id": {"$in": chunk_ids}}):
+                            chunk_docs.append(analysis_doc)
 
-                    main_logger.info(
-                        f"Processing chunk {chunk_start // chunk_size + 1} ({len(chunk_docs)} analyses)"
-                    )
-
-                    # Prepare worker arguments
-                    worker_args = []
-                    for i, doc in enumerate(chunk_docs):
-                        worker_id = i % NUM_WORKERS
-                        worker_args.append((worker_id, doc, str(CHECKPOINT_DIR)))
-
-                    chunk_index = chunk_start // chunk_size + 1
-                    main_logger.info(
-                        "Dispatching %d analyses to workers for chunk %d",
-                        len(worker_args),
-                        chunk_index,
-                    )
-
-                    # Process in parallel and stream results as they finish
-                    for i, result in enumerate(
-                        pool.imap_unordered(
-                            process_analysis_worker, worker_args, chunksize=1
-                        ),
-                        1,
-                    ):
-                        if not result:
+                        if not chunk_docs:
                             continue
 
-                        status = result[0]
+                        main_logger.info(
+                            f"Processing chunk {chunk_start // chunk_size + 1} ({len(chunk_docs)} analyses)"
+                        )
 
-                        if status == "completed":
-                            _, analysis_id, mark_count, batch_count = result[:4]
-                            total_processed += 1
-                            total_marks += mark_count
+                        # Prepare worker arguments
+                        worker_args = []
+                        for i, doc in enumerate(chunk_docs):
+                            worker_id = i % NUM_WORKERS
+                            worker_args.append((worker_id, doc, str(CHECKPOINT_DIR), auth, hash_cache, failed_nodes))
 
-                            main_logger.info(
-                                "Chunk %d: completed analysis %s – %s marks in %d batches "
-                                "(total processed: %s / %s analyses)",
-                                chunk_index,
-                                analysis_id,
-                                f"{mark_count:,}",
-                                batch_count,
-                                f"{total_processed:,}",
-                                f"{len(analyses_to_process):,}",
-                            )
+                        chunk_index = chunk_start // chunk_size + 1
+                        main_logger.info(
+                            "Dispatching %d analyses to workers for chunk %d (cached hashes: %d)",
+                            len(worker_args),
+                            chunk_index,
+                            len(hash_cache),
+                        )
 
-                        elif status == "failed":
-                            _, analysis_id, _, _, error = result
-                            checkpoint.mark_failed(analysis_id, error)
-                            main_logger.error(
-                                "Chunk %d: FAILED analysis %s – %s",
-                                chunk_index,
-                                analysis_id,
-                                error,
-                            )
+                        # Process in parallel and stream results as they finish
+                        for i, result in enumerate(
+                            pool.imap_unordered(
+                                process_analysis_worker, worker_args, chunksize=1
+                            ),
+                            1,
+                        ):
+                            if not result:
+                                continue
 
-                        # Throttled progress report every 50 completed analyses
-                        if total_processed and total_processed % 50 == 0:
-                            elapsed = time.time() - start_time
-                            rate = total_marks / elapsed if elapsed > 0 else 0
-                            eta_hours = (
-                                (len(analyses_to_process) - total_processed)
-                                * (elapsed / total_processed)
-                                / 3600
-                                if total_processed > 0
-                                else 0
-                            )
+                            status = result[0]
 
-                            main_logger.info(
-                                f"""
-    Progress Report:
-      Processed: {total_processed:,} / {len(analyses_to_process):,} analyses
-      Total marks: {total_marks:,}
-      Rate: {rate:.0f} marks/sec
-      Estimated time remaining: {eta_hours:.1f} hours
-    """
-                            )
+                            if status == "completed":
+                                _, analysis_id, mark_count, batch_count = result[:4]
+                                total_processed += 1
+                                total_marks += mark_count
 
-            except KeyboardInterrupt:
-                main_logger.warning("⚠️ Interrupted by user - checkpoint saved")
-                pool.terminate()
-                pool.join()
+                                main_logger.info(
+                                    "Chunk %d: completed analysis %s – %s marks in %d batches "
+                                    "(total processed: %s / %s analyses)",
+                                    chunk_index,
+                                    analysis_id,
+                                    f"{mark_count:,}",
+                                    batch_count,
+                                    f"{total_processed:,}",
+                                    f"{len(analyses_to_process):,}",
+                                )
 
-    # Final statistics
-    final_stats = checkpoint.get_stats()
-    elapsed_hours = (time.time() - start_time) / 3600
+                            elif status == "failed":
+                                _, analysis_id, _, _, error = result
+                                checkpoint.mark_failed(analysis_id, error)
+                                main_logger.error(
+                                    "Chunk %d: FAILED analysis %s – %s",
+                                    chunk_index,
+                                    analysis_id,
+                                    error,
+                                )
 
-    main_logger.info("=" * 60)
-    main_logger.info(
-        f"""
+                            # Throttled progress report every 50 completed analyses
+                            if total_processed and total_processed % 50 == 0:
+                                elapsed = time.time() - start_time
+                                rate = total_marks / elapsed if elapsed > 0 else 0
+                                eta_hours = (
+                                    (len(analyses_to_process) - total_processed)
+                                    * (elapsed / total_processed)
+                                    / 3600
+                                    if total_processed > 0
+                                    else 0
+                                )
+
+                                main_logger.info(
+                                    f"""
+        Progress Report:
+          Processed: {total_processed:,} / {len(analyses_to_process):,} analyses
+          Total marks: {total_marks:,}
+          Cached hashes: {len(hash_cache)}
+          Failed hash lookups: {len(failed_nodes)}
+          Rate: {rate:.0f} marks/sec
+          Estimated time remaining: {eta_hours:.1f} hours
+        """
+                                )
+
+                except KeyboardInterrupt:
+                    main_logger.warning("⚠️ Interrupted by user - checkpoint saved")
+                    pool.terminate()
+                    pool.join()
+
+            # Final statistics
+            final_stats = checkpoint.get_stats()
+            elapsed_hours = (time.time() - start_time) / 3600
+
+            main_logger.info("=" * 60)
+            main_logger.info(
+                f"""
 ETL Complete!
   Total completed: {final_stats['completed']:,}
   Total failed: {final_stats['failed']:,}
   Total marks processed: {total_marks:,}
+  Cached hashes: {len(hash_cache)}
+  Failed hash lookups: {len(failed_nodes)}
   Time elapsed: {elapsed_hours:.2f} hours
   Average rate: {total_marks/(elapsed_hours*3600):.0f} marks/sec
 """
-    )
-    main_logger.info("=" * 60)
+            )
+            main_logger.info("=" * 60)
 
 
 if __name__ == "__main__":
