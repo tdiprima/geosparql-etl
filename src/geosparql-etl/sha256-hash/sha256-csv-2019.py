@@ -8,7 +8,6 @@ This script (Part 1):
 3. Generates a shell script that will compute SHA256 for each SVS file
 4. The generated script outputs to a JSON file: {"slide": "name.svs", "hash": "sha256"}
 """
-import json
 from pathlib import Path
 
 
@@ -96,21 +95,21 @@ def generate_script():
             f.write(f'if [ -f "{svs_path}" ]; then\n')
             f.write(f'    echo "Computing SHA256 for {folder}..."\n')
             f.write(f"    HASH=$(sha256sum \"{svs_path}\" | cut -d' ' -f1)\n")
-            f.write(f"    \n")
-            f.write(f"    # Add comma if not first entry\n")
-            f.write(f'    if [ "$FIRST" = false ]; then\n')
-            f.write(f'        echo "," >> "$OUTPUT_FILE"\n')
-            f.write(f"    fi\n")
-            f.write(f"    FIRST=false\n")
-            f.write(f"    \n")
-            f.write(f"    # Write JSON entry\n")
-            f.write(f'    echo "  {{" >> "$OUTPUT_FILE"\n')
+            f.write("    \n")
+            f.write("    # Add comma if not first entry\n")
+            f.write('    if [ "$FIRST" = false ]; then\n')
+            f.write('        echo "," >> "$OUTPUT_FILE"\n')
+            f.write("    fi\n")
+            f.write("    FIRST=false\n")
+            f.write("    \n")
+            f.write("    # Write JSON entry\n")
+            f.write('    echo "  {" >> "$OUTPUT_FILE"\n')
             f.write(f'    echo "    \\"slide\\": \\"{folder}\\"," >> "$OUTPUT_FILE"\n')
-            f.write(f'    echo "    \\"hash\\": \\"$HASH\\"" >> "$OUTPUT_FILE"\n')
-            f.write(f'    echo "  }}" >> "$OUTPUT_FILE"\n')
-            f.write(f"else\n")
+            f.write('    echo "    \\"hash\\": \\"$HASH\\"" >> "$OUTPUT_FILE"\n')
+            f.write('    echo "  }" >> "$OUTPUT_FILE"\n')
+            f.write("else\n")
             f.write(f'    echo "Warning: SVS file not found: {svs_path}"\n')
-            f.write(f"fi\n\n")
+            f.write("fi\n\n")
 
         f.write("# Close JSON array\n")
         f.write('echo "]" >> "$OUTPUT_FILE"\n\n')
@@ -123,7 +122,7 @@ def generate_script():
     print(f"Generated script: {script_path.absolute()}")
     print(f"Output JSON file will be: {json_output}")
     print(f"Total slides to process: {len(folder_info)}")
-    print(f"\nTo run the generated script:")
+    print("\nTo run the generated script:")
     print(f"  ./{script_path.name}")
     print(f"{'='*80}")
 
