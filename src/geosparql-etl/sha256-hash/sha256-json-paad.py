@@ -6,8 +6,7 @@ This script:
 1. Reads TTL filenames from ~/tammy/test_wsinfer/results/geosparql_output
 2. For each TTL file, computes SHA256 of the corresponding SVS file
 3. Updates the TTL file:
-   - Replaces urn:md5: with urn:sha256:
-   - Replaces the hash value with the computed SHA256
+   - Updates the hash value in existing urn:sha256: URNs with the computed SHA256
 4. If SVS file is missing or hash computation fails, adds hal:missing true triple
 """
 import hashlib
@@ -53,26 +52,22 @@ def update_ttl_file(ttl_path: Path, sha256_hash: Optional[str]) -> None:
         content = f.read()
 
     if sha256_hash:
-        # Replace urn:md5: with urn:sha256: and update the hash value
-        # Pattern matches: <urn:md5:HASH> where HASH is any hex string
-        pattern = r"<urn:md5:([0-9a-fA-F]+)>"
+        # Update the hash value in existing urn:sha256: URNs
+        # Pattern matches: <urn:sha256:HASH> where HASH is any hex string
+        pattern = r"<urn:sha256:([0-9a-fA-F]+)>"
         replacement = f"<urn:sha256:{sha256_hash}>"
         updated_content = re.sub(pattern, replacement, content)
 
         if updated_content == content:
-            print(f"Warning: No urn:md5: pattern found in {ttl_path.name}")
+            print(f"Warning: No urn:sha256: pattern found in {ttl_path.name}")
         else:
             print(f"Updated {ttl_path.name} with SHA256 hash")
     else:
         # Add hal:missing true triple to the ImageObject
         # Find the ImageObject definition and add hal:missing true
-        pattern = r"(<urn:md5:[0-9a-fA-F]+>)\s*\n(\s+a\s+so:ImageObject;)"
+        pattern = r"(<urn:sha256:[0-9a-fA-F]+>)\s*\n(\s+a\s+so:ImageObject;)"
         replacement = r"\1\n\2\n        hal:missing      true;"
         updated_content = re.sub(pattern, replacement, content)
-
-        # Also update urn:md5: to urn:sha256: even for missing files
-        # (keeping the old hash as a placeholder)
-        updated_content = re.sub(r"urn:md5:", "urn:sha256:", updated_content)
 
         if updated_content == content:
             print(f"Warning: Could not add hal:missing to {ttl_path.name}")
