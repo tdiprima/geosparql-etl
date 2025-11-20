@@ -79,7 +79,7 @@ def create_geosparql_ttl(geojson_data, filename, output_dir):
     image_id = extract_image_id(filename)
     image_hash = generate_image_hash(image_id)
     # timestamp = datetime.utcnow().isoformat() + "Z"
-    timestamp = datetime.now(tz=timezone.utc).isoformat().replace('+00:00', 'Z')
+    timestamp = datetime.now(tz=timezone.utc).isoformat().replace("+00:00", "Z")
 
     # TTL header with prefixes
     ttl_content = """@prefix dc:   <http://purl.org/dc/terms/> .

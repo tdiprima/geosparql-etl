@@ -15,14 +15,14 @@ import threading
 import time
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
-from multiprocessing import Pool, Manager
+from multiprocessing import Manager, Pool
 from pathlib import Path
 
 # Add parent directory to path to import utils
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from sha256_pipeline import get_auth, get_real_hash_from_node
 from utils import mongo_connection
-from sha256_pipeline import get_real_hash_from_node, get_auth
 
 # =====================
 # 📧 CONFIG - OPTIMIZED FOR PARALLEL PROCESSING
@@ -261,7 +261,9 @@ def polygon_to_wkt(geometry, image_width, image_height):
         return None
 
 
-def create_ttl_header(analysis_doc, batch_num, auth=None, hash_cache=None, failed_nodes=None):
+def create_ttl_header(
+    analysis_doc, batch_num, auth=None, hash_cache=None, failed_nodes=None
+):
     """Create TTL header as string (manual building for clean output)"""
     analysis = analysis_doc["analysis"]
     image = analysis_doc["image"]
@@ -721,7 +723,9 @@ def main():
 
                         # Fetch full documents for this chunk
                         chunk_docs = []
-                        for analysis_doc in db.analysis.find({"_id": {"$in": chunk_ids}}):
+                        for analysis_doc in db.analysis.find(
+                            {"_id": {"$in": chunk_ids}}
+                        ):
                             chunk_docs.append(analysis_doc)
 
                         if not chunk_docs:
@@ -735,7 +739,16 @@ def main():
                         worker_args = []
                         for i, doc in enumerate(chunk_docs):
                             worker_id = i % NUM_WORKERS
-                            worker_args.append((worker_id, doc, str(CHECKPOINT_DIR), auth, hash_cache, failed_nodes))
+                            worker_args.append(
+                                (
+                                    worker_id,
+                                    doc,
+                                    str(CHECKPOINT_DIR),
+                                    auth,
+                                    hash_cache,
+                                    failed_nodes,
+                                )
+                            )
 
                         chunk_index = chunk_start // chunk_size + 1
                         main_logger.info(

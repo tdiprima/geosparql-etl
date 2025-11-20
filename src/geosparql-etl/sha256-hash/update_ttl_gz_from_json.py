@@ -7,11 +7,12 @@ This script (Part 2):
 3. Updates all .ttl.gz files in that folder with the correct SHA256 hash
 4. Updates urn:sha256: values by decompressing, modifying, and recompressing
 """
+
 import gzip
 import json
 import re
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict
 
 
 def load_hash_mapping(json_path: Path) -> Dict[str, str]:
@@ -24,11 +25,11 @@ def load_hash_mapping(json_path: Path) -> Dict[str, str]:
     Returns:
         Dictionary mapping slide names to SHA256 hashes
     """
-    with open(json_path, 'r') as f:
+    with open(json_path, "r") as f:
         data = json.load(f)
 
     # Convert list of dicts to a simple slide->hash mapping
-    mapping = {item['slide']: item['hash'] for item in data}
+    mapping = {item["slide"]: item["hash"] for item in data}
     return mapping
 
 
@@ -45,29 +46,31 @@ def update_ttl_gz_file(ttl_gz_path: Path, sha256_hash: str) -> bool:
     """
     try:
         # Decompress and read
-        with gzip.open(ttl_gz_path, 'rt', encoding='utf-8') as f:
+        with gzip.open(ttl_gz_path, "rt", encoding="utf-8") as f:
             content = f.read()
 
         # Replace urn:sha256: value
         # Pattern matches: <urn:sha256:HASH> where HASH is any hex string
-        pattern = r'<urn:sha256:([0-9a-fA-F]+)>'
-        replacement = f'<urn:sha256:{sha256_hash}>'
+        pattern = r"<urn:sha256:([0-9a-fA-F]+)>"
+        replacement = f"<urn:sha256:{sha256_hash}>"
 
         # Check if pattern exists
         if not re.search(pattern, content):
             # Maybe it's still urn:md5:? Try replacing that too
-            pattern_md5 = r'<urn:md5:([0-9a-fA-F]+)>'
+            pattern_md5 = r"<urn:md5:([0-9a-fA-F]+)>"
             if re.search(pattern_md5, content):
                 # Replace md5 with sha256
                 updated_content = re.sub(pattern_md5, replacement, content)
             else:
-                print(f"    Warning: No urn:sha256: or urn:md5: pattern found in {ttl_gz_path.name}")
+                print(
+                    f"    Warning: No urn:sha256: or urn:md5: pattern found in {ttl_gz_path.name}"
+                )
                 return False
         else:
             updated_content = re.sub(pattern, replacement, content)
 
         # Recompress and write back
-        with gzip.open(ttl_gz_path, 'wt', encoding='utf-8') as f:
+        with gzip.open(ttl_gz_path, "wt", encoding="utf-8") as f:
             f.write(updated_content)
 
         return True
@@ -100,7 +103,9 @@ def main():
     print(f"Loaded {len(hash_mapping)} slide hashes")
 
     # Get all .svs folders
-    svs_folders = [d for d in base_dir.iterdir() if d.is_dir() and d.name.endswith('.svs')]
+    svs_folders = [
+        d for d in base_dir.iterdir() if d.is_dir() and d.name.endswith(".svs")
+    ]
 
     if not svs_folders:
         print(f"No .svs folders found in {base_dir}")
@@ -129,7 +134,7 @@ def main():
         ttl_gz_files = list(svs_folder.glob("*.ttl.gz"))
 
         if not ttl_gz_files:
-            print(f"  No .ttl.gz files found")
+            print("  No .ttl.gz files found")
             continue
 
         print(f"  Found {len(ttl_gz_files)} .ttl.gz files")
@@ -145,7 +150,7 @@ def main():
         total_files_processed += len(ttl_gz_files)
 
     print("=" * 80)
-    print(f"Processing complete!")
+    print("Processing complete!")
     print(f"Total files processed: {total_files_processed}")
     print(f"Total files updated: {total_files_updated}")
 
