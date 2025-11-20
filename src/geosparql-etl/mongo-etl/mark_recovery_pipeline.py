@@ -123,54 +123,53 @@ class FastMarkRecoveryAnalyzer:
 
             # Quick sampling to estimate marks per analysis
             logger.info("Estimating marks per analysis using sampling...")
-            sample_pipeline = []
-            # sample_pipeline = [
-            #     {"$sample": {"size": 10}},  # Just sample 10 analyses
-            #     {
-            #         "$lookup": {
-            #             "from": "mark",
-            #             "let": {
-            #                 "exec_id": "$analysis.execution_id",
-            #                 "img_id": "$image.imageid",
-            #             },
-            #             "pipeline": [
-            #                 {
-            #                     "$match": {
-            #                         "$expr": {
-            #                             "$and": [
-            #                                 {
-            #                                     "$eq": [
-            #                                         "$provenance.analysis.execution_id",
-            #                                         "$$exec_id",
-            #                                     ]
-            #                                 },
-            #                                 {
-            #                                     "$eq": [
-            #                                         "$provenance.image.imageid",
-            #                                         "$$img_id",
-            #                                     ]
-            #                                 },
-            #                             ]
-            #                         }
-            #                     }
-            #                 },
-            #                 {"$count": "mark_count"},
-            #             ],
-            #             "as": "mark_info",
-            #         }
-            #     },
-            #     {
-            #         "$project": {
-            #             "_id": 1,
-            #             "mark_count": {
-            #                 "$ifNull": [
-            #                     {"$arrayElemAt": ["$mark_info.mark_count", 0]},
-            #                     0,
-            #                 ]
-            #             },
-            #         }
-            #     },
-            # ]
+            sample_pipeline = [
+                {"$sample": {"size": 10}},  # Just sample 10 analyses
+                {
+                    "$lookup": {
+                        "from": "mark",
+                        "let": {
+                            "exec_id": "$analysis.execution_id",
+                            "img_id": "$image.imageid",
+                        },
+                        "pipeline": [
+                            {
+                                "$match": {
+                                    "$expr": {
+                                        "$and": [
+                                            {
+                                                "$eq": [
+                                                    "$provenance.analysis.execution_id",
+                                                    "$$exec_id",
+                                                ]
+                                            },
+                                            {
+                                                "$eq": [
+                                                    "$provenance.image.imageid",
+                                                    "$$img_id",
+                                                ]
+                                            },
+                                        ]
+                                    }
+                                }
+                            },
+                            {"$count": "mark_count"},
+                        ],
+                        "as": "mark_info",
+                    }
+                },
+                {
+                    "$project": {
+                        "_id": 1,
+                        "mark_count": {
+                            "$ifNull": [
+                                {"$arrayElemAt": ["$mark_info.mark_count", 0]},
+                                0,
+                            ]
+                        },
+                    }
+                },
+            ]
 
             try:
                 logger.info("Running aggregation pipeline...")
@@ -359,32 +358,154 @@ def main():
     logger.info("\nStep 3: Generating recovery plan...")
     report_path = analyzer.save_report()
 
-    # Print failed analysis IDs if any
+    # Step 4: Create recovery script for failed analyses
     if analyzer.failed_analyses:
+        logger.info("\nStep 4: Creating recovery script...")
+        recovery = FailedAnalysisRecovery(analyzer.failed_analyses, mongo_uri, MONGO_DB)
+        script_path = recovery.create_recovery_script()
+
         logger.info("\n" + "=" * 60)
-        logger.info("FAILED ANALYSIS IDS")
+        logger.info("RECOVERY INSTRUCTIONS")
         logger.info("=" * 60)
-        for failed in analyzer.failed_analyses[:20]:  # Show first 20
-            logger.info(f"  {failed['analysis_id']}")
-        if len(analyzer.failed_analyses) > 20:
-            logger.info(f"  ... and {len(analyzer.failed_analyses) - 20} more")
+        logger.info(f"1. Review the recovery report: {report_path}")
+        logger.info(f"2. Run the recovery script: python3 {script_path}")
+        logger.info("3. Monitor progress in recovery_checkpoints/")
+        logger.info("4. Re-run this analysis after recovery to verify")
+    else:
+        # Print failed analysis IDs if any
+        logger.info("\n" + "=" * 60)
+        logger.info("NEXT STEPS")
+        logger.info("=" * 60)
+        logger.info(f"1. Review the recovery report: {report_path}")
 
-    logger.info("\n" + "=" * 60)
-    logger.info("NEXT STEPS")
-    logger.info("=" * 60)
-    logger.info(f"1. Review the recovery report: {report_path}")
-
-    if analyzer.failed_analyses:
-        logger.info(f"2. Reprocess {len(analyzer.failed_analyses)} failed analyses")
-
-    if stats["unprocessed_analyses"] > 0:
-        logger.info(
-            f"3. Process {stats['unprocessed_analyses']:,} unprocessed analyses"
-        )
+        if stats["unprocessed_analyses"] > 0:
+            logger.info(
+                f"2. Process {stats['unprocessed_analyses']:,} unprocessed analyses"
+            )
 
     logger.info("\n" + "=" * 60)
     logger.info("Recovery Pipeline Complete")
     logger.info("=" * 60)
+
+
+class FailedAnalysisRecovery:
+    """Handles recovery of failed analyses"""
+
+    def __init__(self, failed_analyses: List[Dict], mongo_uri: str, db_name: str):
+        self.failed_analyses = failed_analyses
+        self.mongo_uri = mongo_uri
+        self.db_name = db_name
+
+    def create_recovery_script(self, output_path: Path = None) -> Path:
+        """Create a script to reprocess only failed analyses"""
+
+        if output_path is None:
+            output_path = OUTPUT_DIR / "reprocess_failed.py"
+
+        # Extract analysis IDs
+        failed_ids = [f["analysis_id"] for f in self.failed_analyses]
+
+        script_content = f'''#!/usr/bin/env python3
+"""
+Recovery script for failed analyses
+Generated: {datetime.now().isoformat()}
+Total failed analyses to reprocess: {len(failed_ids)}
+"""
+
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from mongodb_to_rdf_updated import process_analysis_worker, setup_worker_logger
+from utils import mongo_connection
+from multiprocessing import Pool
+import logging
+import time
+
+# Configuration
+MONGO_HOST = "{MONGO_HOST}"
+MONGO_PORT = {MONGO_PORT}
+MONGO_DB = "{MONGO_DB}"
+NUM_WORKERS = 10  # Reduced for recovery
+CHECKPOINT_DIR = Path("recovery_checkpoints")
+
+# Failed analysis IDs to reprocess
+FAILED_IDS = {failed_ids}
+
+def main():
+    # Create checkpoint directory
+    CHECKPOINT_DIR.mkdir(exist_ok=True)
+    
+    # Fix the in_progress.txt issue
+    (CHECKPOINT_DIR / "in_progress.txt").touch()
+    
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger("Recovery")
+    
+    logger.info(f"Starting recovery of {{len(FAILED_IDS)}} failed analyses")
+    
+    start_time = time.time()
+    
+    with mongo_connection(f"mongodb://{{MONGO_HOST}}:{{MONGO_PORT}}/", MONGO_DB) as db:
+        # Fetch full documents for failed analyses
+        failed_docs = []
+        for aid in FAILED_IDS:
+            doc = db.analysis.find_one({{"_id": aid}})
+            if doc:
+                failed_docs.append(doc)
+            else:
+                logger.warning(f"Analysis {{aid}} not found in database")
+        
+        logger.info(f"Found {{len(failed_docs)}} analyses to reprocess")
+        
+        if not failed_docs:
+            logger.warning("No valid analyses found to reprocess!")
+            return
+        
+        # Process with reduced parallelism to avoid overwhelming system
+        with Pool(processes=NUM_WORKERS) as pool:
+            worker_args = []
+            for i, doc in enumerate(failed_docs):
+                worker_id = i % NUM_WORKERS
+                worker_args.append((worker_id, doc, str(CHECKPOINT_DIR)))
+            
+            logger.info(f"Starting parallel processing with {{NUM_WORKERS}} workers...")
+            
+            results = []
+            for i, result in enumerate(pool.imap_unordered(process_analysis_worker, worker_args, chunksize=1), 1):
+                results.append(result)
+                if i % 10 == 0:
+                    elapsed = time.time() - start_time
+                    rate = i / elapsed
+                    eta = (len(worker_args) - i) / rate if rate > 0 else 0
+                    logger.info(f"Progress: {{i}}/{{len(worker_args)}} - ETA: {{eta:.1f}} seconds")
+            
+            # Count successes
+            success_count = sum(1 for r in results if r and r[0] == "completed")
+            failed_count = sum(1 for r in results if r and r[0] == "failed")
+            
+            elapsed_total = time.time() - start_time
+            logger.info(f"Recovery complete in {{elapsed_total:.1f}} seconds")
+            logger.info(f"Results: {{success_count}} succeeded, {{failed_count}} failed out of {{len(failed_docs)}} total")
+            
+            # Log any new failures
+            if failed_count > 0:
+                logger.warning("The following analyses failed again:")
+                for r in results:
+                    if r and r[0] == "failed":
+                        logger.warning(f"  - {{r[1]}}: {{r[4] if len(r) > 4 else 'Unknown error'}}")
+
+if __name__ == "__main__":
+    main()
+'''
+
+        with open(output_path, "w") as f:
+            f.write(script_content)
+
+        output_path.chmod(0o755)  # Make executable
+        logger.info(f"Recovery script created: {output_path}")
+
+        return output_path
 
 
 if __name__ == "__main__":
