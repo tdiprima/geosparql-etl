@@ -235,8 +235,8 @@ def main():
     """Main entry point for the ETL script."""
 
     # Configuration
-    INPUT_DIR = "./geojson_files"  # Directory containing your 471 GeoJSON files
-    OUTPUT_DIR = "./geosparql_output"  # Directory for output TTL files
+    INPUT_DIR = "/data/tammy/test_wsinfer/results/model-outputs-geojson"  # Directory containing your 471 GeoJSON files
+    OUTPUT_DIR = "/data/tammy/raj-class1"  # Directory for output TTL files
 
     print("GeoJSON to GeoSPARQL ETL Converter")
     print("===================================")
