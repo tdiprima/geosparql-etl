@@ -110,7 +110,7 @@ def create_geosparql_ttl(geojson_data, filename, output_dir):
         dc:date              \""""
         + timestamp
         + """\"^^xsd:dateTime;
-        dc:description       "Tissue classification predictions for """
+        dc:description       "Raj's 10-class classification results produced via wsinfer and Tammy's PyTorch model for """
         + image_id
         + """";
         dc:title             "tissue-classification-predictions";
@@ -118,7 +118,6 @@ def create_geosparql_ttl(geojson_data, filename, output_dir):
                                prov:used               <urn:sha256:"""
         + image_hash
         + """>;
-                               prov:wasAssociatedWith  <https://github.com/tissue-classification-model>
                              ];
 """
     )
@@ -151,7 +150,7 @@ def create_geosparql_ttl(geojson_data, filename, output_dir):
 
                 # Add feature with proper indentation for <> subject
                 ttl_content += f"""        rdfs:member          [ a                   geo:Feature;
-                               geo:hasGeometry     [ geo:asWKT  "{wkt}" ];
+                               geo:hasGeometry     [ geo:asWKT  "{wkt}"^^geo:wktLiteral ];
                                hal:classification  sno:{snomed_id};
                                hal:measurement     """
 

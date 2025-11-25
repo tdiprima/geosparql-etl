@@ -222,7 +222,6 @@ def create_geosparql_ttl(csv_path, image_name, image_hash=None, cancer_type=None
         hal:patchHeight      "{patch_info['height']}"^^xsd:int;
         prov:wasGeneratedBy  [ a                       prov:Activity;
                                prov:used               <urn:sha256:{image_hash}>;
-                               prov:wasAssociatedWith  <https://github.com/nuclear-segmentation-model>
                              ];
 """
 
@@ -254,7 +253,7 @@ def create_geosparql_ttl(csv_path, image_name, image_hash=None, cancer_type=None
             # Add feature with proper indentation for <> subject
             # Use probability of 1.0 as placeholder (as per requirements)
             ttl_content += f"""        rdfs:member          [ a                   geo:Feature;
-                               geo:hasGeometry     [ geo:asWKT  "{wkt}" ];
+                               geo:hasGeometry     [ geo:asWKT  "{wkt}"^^geo:wktLiteral ];
                                hal:classification  sno:{snomed_id};
                                hal:measurement     [ hal:hasProbability  "1.0"^^xsd:float ]"""
 
