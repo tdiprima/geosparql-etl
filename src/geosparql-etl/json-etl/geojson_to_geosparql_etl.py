@@ -113,8 +113,6 @@ def create_geosparql_ttl(geojson_data, filename, output_dir):
         dc:description       "Tissue classification predictions for """
         + image_id
         + """";
-        dc:publisher         <https://ror.org/01882y777> , <https://ror.org/05qghxh33>;
-        dc:references        "https://doi.org/10.1038/s41597-020-0528-1";
         dc:title             "tissue-classification-predictions";
         prov:wasGeneratedBy  [ a                       prov:Activity;
                                prov:used               <urn:sha256:"""
