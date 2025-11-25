@@ -1,7 +1,5 @@
 #!/bin/bash
-
 # Script to remove loinc prefix line from .ttl.gz files in parallel (using xargs)
-# Usage: ./process_ttl_files_xargs.sh
 
 DATA_DIR="/data/tammy/mongo-ttl"
 PREFIX_TO_REMOVE="@prefix loinc: <http://loinc.org/rdf/> ."
@@ -44,3 +42,6 @@ find "${DATA_DIR}" -name "*.ttl.gz" -type f -print0 | \
 
 echo ""
 echo "Processing complete!"
+
+# find /data/tammy/mongo-ttl -name "*.ttl.gz.tmp" -type f 2>/dev/null | head -20
+# find /data/tammy/mongo-ttl -name "*.ttl.gz.tmp" -type f -delete
