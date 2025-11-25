@@ -6,6 +6,7 @@ for pathology tissue classifications.
 import hashlib
 import json
 from datetime import datetime, timezone
+from multiprocessing import Pool
 from pathlib import Path
 
 # SNOMED URI mappings for tissue classes
@@ -181,8 +182,35 @@ def create_geosparql_ttl(geojson_data, filename, output_dir):
     return ttl_content
 
 
+def process_single_file(args):
+    """Process a single GeoJSON file and return success status."""
+    geojson_path, output_dir = args
+
+    try:
+        # Read GeoJSON file
+        with open(geojson_path, "r") as f:
+            geojson_data = json.load(f)
+
+        # Convert to GeoSPARQL
+        ttl_content = create_geosparql_ttl(
+            geojson_data, geojson_path.name, output_dir
+        )
+
+        # Write output file
+        output_filename = geojson_path.stem + ".ttl"
+        output_path = Path(output_dir) / output_filename
+
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write(ttl_content)
+
+        return (True, geojson_path.name, None)
+
+    except Exception as e:
+        return (False, geojson_path.name, str(e))
+
+
 def process_directory(input_dir, output_dir):
-    """Process all GeoJSON files in the input directory."""
+    """Process all GeoJSON files in the input directory using parallel processing."""
 
     # Create output directory if it doesn't exist
     Path(output_dir).mkdir(parents=True, exist_ok=True)
@@ -195,35 +223,25 @@ def process_directory(input_dir, output_dir):
         return
 
     print(f"Found {len(geojson_files)} GeoJSON files to process")
+    print(f"Using 20 cores for parallel processing")
+
+    # Prepare arguments for multiprocessing
+    file_args = [(geojson_path, output_dir) for geojson_path in geojson_files]
 
     success_count = 0
     error_count = 0
 
-    for geojson_path in geojson_files:
-        try:
-            print(f"Processing: {geojson_path.name}")
+    # Process files in parallel using 20 cores
+    with Pool(processes=20) as pool:
+        results = pool.map(process_single_file, file_args)
 
-            # Read GeoJSON file
-            with open(geojson_path, "r") as f:
-                geojson_data = json.load(f)
-
-            # Convert to GeoSPARQL
-            ttl_content = create_geosparql_ttl(
-                geojson_data, geojson_path.name, output_dir
-            )
-
-            # Write output file
-            output_filename = geojson_path.stem + ".ttl"
-            output_path = Path(output_dir) / output_filename
-
-            with open(output_path, "w", encoding="utf-8") as f:
-                f.write(ttl_content)
-
-            print(f"  ✓ Created: {output_filename}")
+    # Process results
+    for success, filename, error in results:
+        if success:
+            print(f"  ✓ Created: {filename.replace('.geojson', '.ttl')}")
             success_count += 1
-
-        except Exception as e:
-            print(f"  ✗ Error processing {geojson_path.name}: {e}")
+        else:
+            print(f"  ✗ Error processing {filename}: {error}")
             error_count += 1
 
     print("\nProcessing complete!")
