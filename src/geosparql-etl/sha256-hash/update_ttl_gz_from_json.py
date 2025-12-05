@@ -6,13 +6,20 @@ This script (Part 2):
 2. For each .svs subfolder in /data3/tammy/nuclear_geosparql_output
 3. Updates all .ttl.gz files in that folder with the correct SHA256 hash
 4. Updates urn:sha256: values by decompressing, modifying, and recompressing
+
+Usage:
+    python update_ttl_gz_from_json.py                    # Process all folders
+    python update_ttl_gz_from_json.py --start-from <name> # Resume from specific folder
 """
 
 import gzip
 import json
 import re
 from pathlib import Path
-from typing import Dict
+from typing import Dict, List, Tuple
+from multiprocessing import Pool, cpu_count
+import argparse
+from functools import partial
 
 
 def load_hash_mapping(json_path: Path) -> Dict[str, str]:
@@ -33,7 +40,7 @@ def load_hash_mapping(json_path: Path) -> Dict[str, str]:
     return mapping
 
 
-def update_ttl_gz_file(ttl_gz_path: Path, sha256_hash: str) -> bool:
+def update_ttl_gz_file(ttl_gz_path: Path, sha256_hash: str) -> Tuple[bool, str]:
     """
     Update a .ttl.gz file with the correct SHA256 hash.
 
@@ -42,7 +49,7 @@ def update_ttl_gz_file(ttl_gz_path: Path, sha256_hash: str) -> bool:
         sha256_hash: The SHA256 hash to use
 
     Returns:
-        True if updated successfully, False otherwise
+        Tuple of (success: bool, message: str)
     """
     try:
         # Decompress and read
@@ -62,10 +69,7 @@ def update_ttl_gz_file(ttl_gz_path: Path, sha256_hash: str) -> bool:
                 # Replace md5 with sha256
                 updated_content = re.sub(pattern_md5, replacement, content)
             else:
-                print(
-                    f"    Warning: No urn:sha256: or urn:md5: pattern found in {ttl_gz_path.name}"
-                )
-                return False
+                return False, f"No urn:sha256: or urn:md5: pattern found in {ttl_gz_path.name}"
         else:
             updated_content = re.sub(pattern, replacement, content)
 
@@ -73,15 +77,94 @@ def update_ttl_gz_file(ttl_gz_path: Path, sha256_hash: str) -> bool:
         with gzip.open(ttl_gz_path, "wt", encoding="utf-8") as f:
             f.write(updated_content)
 
-        return True
+        return True, ""
 
     except Exception as e:
-        print(f"    Error processing {ttl_gz_path.name}: {e}")
-        return False
+        return False, f"Error processing {ttl_gz_path.name}: {e}"
+
+
+def process_single_file(args: Tuple[Path, str]) -> Tuple[bool, str]:
+    """
+    Wrapper function for multiprocessing.
+
+    Args:
+        args: Tuple of (ttl_gz_path, sha256_hash)
+
+    Returns:
+        Tuple of (success: bool, message: str)
+    """
+    ttl_gz_path, sha256_hash = args
+    return update_ttl_gz_file(ttl_gz_path, sha256_hash)
+
+
+def process_folder(svs_folder: Path, hash_mapping: Dict[str, str], num_workers: int = None) -> Tuple[int, int, List[str]]:
+    """
+    Process all .ttl.gz files in a folder using multiprocessing.
+
+    Args:
+        svs_folder: Path to the .svs folder
+        hash_mapping: Dictionary mapping slide names to SHA256 hashes
+        num_workers: Number of worker processes (default: CPU count)
+
+    Returns:
+        Tuple of (updated_count, total_count, error_messages)
+    """
+    folder_name = svs_folder.name
+
+    # Get the hash for this slide
+    if folder_name not in hash_mapping:
+        return 0, 0, [f"No hash found for {folder_name}"]
+
+    sha256_hash = hash_mapping[folder_name]
+
+    # Get all .ttl.gz files in this folder
+    ttl_gz_files = list(svs_folder.glob("*.ttl.gz"))
+
+    if not ttl_gz_files:
+        return 0, 0, ["No .ttl.gz files found"]
+
+    # Prepare arguments for multiprocessing
+    args_list = [(ttl_file, sha256_hash) for ttl_file in ttl_gz_files]
+
+    # Use multiprocessing pool
+    if num_workers is None:
+        num_workers = min(cpu_count(), len(ttl_gz_files))
+
+    error_messages = []
+    updated_count = 0
+
+    with Pool(processes=num_workers) as pool:
+        results = pool.map(process_single_file, args_list)
+
+        for success, message in results:
+            if success:
+                updated_count += 1
+            elif message:
+                error_messages.append(message)
+
+    return updated_count, len(ttl_gz_files), error_messages
 
 
 def main():
     """Main processing function."""
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(
+        description="Update .ttl.gz files with SHA256 hashes from JSON file"
+    )
+    parser.add_argument(
+        "--start-from",
+        type=str,
+        help="Resume processing from this folder name (e.g., TCGA-D5-6530-01Z-00-DX1...svs)",
+        default=None,
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        help=f"Number of worker processes (default: {cpu_count()})",
+        default=cpu_count(),
+    )
+    args = parser.parse_args()
+
     # Paths
     json_path = Path("slide_hashes.json")
     base_dir = Path("/data3/tammy/nuclear_geosparql_output")
@@ -102,52 +185,57 @@ def main():
     hash_mapping = load_hash_mapping(json_path)
     print(f"Loaded {len(hash_mapping)} slide hashes")
 
-    # Get all .svs folders
-    svs_folders = [
-        d for d in base_dir.iterdir() if d.is_dir() and d.name.endswith(".svs")
-    ]
+    # Get all .svs folders (sorted for consistent ordering)
+    svs_folders = sorted(
+        [d for d in base_dir.iterdir() if d.is_dir() and d.name.endswith(".svs")]
+    )
 
     if not svs_folders:
         print(f"No .svs folders found in {base_dir}")
         return
 
-    print(f"Found {len(svs_folders)} .svs folders to process")
+    # Handle resume from specific folder
+    start_index = 0
+    if args.start_from:
+        try:
+            start_index = next(
+                i for i, folder in enumerate(svs_folders)
+                if folder.name == args.start_from
+            )
+            print(f"Resuming from: {args.start_from}")
+            print(f"Skipping first {start_index} folders")
+        except StopIteration:
+            print(f"Warning: Start folder '{args.start_from}' not found")
+            print("Processing all folders...")
+            start_index = 0
+
+    svs_folders_to_process = svs_folders[start_index:]
+
+    print(f"Found {len(svs_folders)} total .svs folders")
+    print(f"Processing {len(svs_folders_to_process)} folders")
+    print(f"Using {args.workers} worker processes")
     print("=" * 80)
 
     # Process each folder
     total_files_updated = 0
     total_files_processed = 0
 
-    for svs_folder in svs_folders:
+    for idx, svs_folder in enumerate(svs_folders_to_process, start=1):
         folder_name = svs_folder.name
+        print(f"\n[{idx}/{len(svs_folders_to_process)}] Processing {folder_name}")
 
-        # Get the hash for this slide
-        if folder_name not in hash_mapping:
-            print(f"\nWarning: No hash found for {folder_name}, skipping")
-            continue
+        updated_count, total_count, error_messages = process_folder(
+            svs_folder, hash_mapping, num_workers=args.workers
+        )
 
-        sha256_hash = hash_mapping[folder_name]
-        print(f"\nProcessing {folder_name}")
-        print(f"  Hash: {sha256_hash[:16]}...")
+        if error_messages:
+            for msg in error_messages:
+                print(f"  Warning: {msg}")
 
-        # Get all .ttl.gz files in this folder
-        ttl_gz_files = list(svs_folder.glob("*.ttl.gz"))
-
-        if not ttl_gz_files:
-            print("  No .ttl.gz files found")
-            continue
-
-        print(f"  Found {len(ttl_gz_files)} .ttl.gz files")
-
-        # Update each file
-        updated_count = 0
-        for ttl_gz_file in ttl_gz_files:
-            if update_ttl_gz_file(ttl_gz_file, sha256_hash):
-                updated_count += 1
-
-        print(f"  Updated {updated_count}/{len(ttl_gz_files)} files")
-        total_files_updated += updated_count
-        total_files_processed += len(ttl_gz_files)
+        if total_count > 0:
+            print(f"  Updated {updated_count}/{total_count} files")
+            total_files_updated += updated_count
+            total_files_processed += total_count
 
     print("=" * 80)
     print("Processing complete!")
