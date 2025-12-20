@@ -1,3 +1,10 @@
+"""
+SHA256 Hash Pipeline for Drupal Nodes
+
+This script retrieves JSON data from a Drupal node, extracts a file path,
+and computes the SHA256 hash of the file at that path. It handles authentication
+via environment variables and provides error handling for missing files.
+"""
 import hashlib
 import os
 from pathlib import Path
