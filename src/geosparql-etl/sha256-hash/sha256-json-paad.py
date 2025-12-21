@@ -60,8 +60,6 @@ def update_ttl_file(ttl_path: Path, sha256_hash: Optional[str]) -> None:
 
         if updated_content == content:
             print(f"Warning: No urn:sha256: pattern found in {ttl_path.name}")
-        else:
-            print(f"Updated {ttl_path.name} with SHA256 hash")
     else:
         # Add hal:missing true triple to the ImageObject
         # Find the ImageObject definition and add hal:missing true
@@ -71,8 +69,6 @@ def update_ttl_file(ttl_path: Path, sha256_hash: Optional[str]) -> None:
 
         if updated_content == content:
             print(f"Warning: Could not add hal:missing to {ttl_path.name}")
-        else:
-            print(f"Added hal:missing true to {ttl_path.name} (SVS file not found)")
 
     # Write the updated content back
     with open(ttl_path, "w", encoding="utf-8") as f:
@@ -100,12 +96,10 @@ def main():
         print(f"No TTL files found in {ttl_dir}")
         return
 
-    print(f"Found {len(ttl_files)} TTL files to process")
-    print(f"SVS base directory: {svs_base_dir}")
-    print("-" * 80)
+    total = len(ttl_files)
 
     # Process each TTL file
-    for ttl_path in ttl_files:
+    for idx, ttl_path in enumerate(ttl_files, 1):
         # Extract base filename (without .ttl extension)
         base_name = ttl_path.stem
 
@@ -115,16 +109,13 @@ def main():
         # Compute SHA256 hash
         sha256_hash = compute_sha256(svs_path)
 
-        if sha256_hash:
-            print(f"Processing {base_name}.ttl - SHA256: {sha256_hash[:16]}...")
-        else:
-            print(f"Processing {base_name}.ttl - SVS file not found at {svs_path}")
-
         # Update the TTL file
         update_ttl_file(ttl_path, sha256_hash)
 
-    print("-" * 80)
-    print("Processing complete!")
+        if sha256_hash:
+            print(f"{idx}/{total}")
+        else:
+            print(f"SVS file not found at {svs_path}")
 
 
 if __name__ == "__main__":
