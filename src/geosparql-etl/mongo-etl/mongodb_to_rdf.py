@@ -257,7 +257,7 @@ def polygon_to_wkt(geometry, image_width, image_height):
             wkt_coords.append(wkt_coords[0])
 
         return f"POLYGON (({', '.join(wkt_coords)}))"
-    except:
+    except Exception:
         return None
 
 
@@ -393,8 +393,7 @@ def add_mark_to_ttl(mark, image_width, image_height, is_first_feature):
         if nucleustype:
             nucleus_parts = nucleustype.split(".")
             if len(nucleus_parts) >= 3:
-                # Example: "tumor.ep.1" → tumor cells
-                cell_type = nucleus_parts[0]  # tumor, lymphocyte, etc.
+                # e.g. "tumor.ep.1" — 3+ parts indicates nuclear material
                 is_nuclear_material = True
 
         # Only add human annotation if one exists AND is valid SNOMED
