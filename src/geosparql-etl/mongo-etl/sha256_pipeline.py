@@ -36,7 +36,7 @@ def get_drupal_json(node_id: int, auth=None) -> dict:
         auth: Optional authentication tuple (username, password) or other auth handler
     """
     url = f"{DRUPAL_BASE}/{node_id}?_format=json"
-    resp = requests.get(url, verify=False, auth=auth)
+    resp = requests.get(url, verify=False, auth=auth, timeout=30)
     resp.raise_for_status()
     return resp.json()
 

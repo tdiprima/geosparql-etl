@@ -19,7 +19,6 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 from multiprocessing import Pool, cpu_count
 import argparse
-from functools import partial
 
 
 def load_hash_mapping(json_path: Path) -> Dict[str, str]:

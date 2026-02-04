@@ -223,7 +223,7 @@ def process_directory(input_dir, output_dir):
         return
 
     print(f"Found {len(geojson_files)} GeoJSON files to process")
-    print(f"Using 20 cores for parallel processing")
+    print("Using 20 cores for parallel processing")
 
     # Prepare arguments for multiprocessing
     file_args = [(geojson_path, output_dir) for geojson_path in geojson_files]

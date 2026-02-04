@@ -614,8 +614,8 @@ def process_analysis_worker(args):
             finally:
                 try:
                     marks_cursor.close()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Could not close marks_cursor: %s", e)
 
             elapsed = time.time() - start_time
             logger.info(
@@ -649,8 +649,8 @@ def process_analysis_worker(args):
         try:
             checkpoint = ParallelCheckpointManager(checkpoint_dir)
             checkpoint.mark_failed(analysis_id, str(e))
-        except:
-            pass
+        except Exception as mark_err:
+            logger.warning("Could not mark %s as failed: %s", analysis_id, mark_err)
 
         return ("failed", analysis_id, 0, 0, str(e))
 

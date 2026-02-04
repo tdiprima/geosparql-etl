@@ -41,7 +41,7 @@ def update_ttl_gz_file(ttl_gz_path: Path, sha256_hash: str) -> Tuple[bool, str]:
             if re.search(pattern_md5, content):
                 updated_content = re.sub(pattern_md5, replacement, content)
             else:
-                return False, f"No urn:sha256: or urn:md5: pattern found"
+                return False, "No urn:sha256: or urn:md5: pattern found"
         else:
             updated_content = re.sub(pattern, replacement, content)
 
