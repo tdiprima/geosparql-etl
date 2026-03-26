@@ -28,8 +28,8 @@ import argparse
 import gzip
 import re
 import sys
-from datetime import datetime, timezone
 from contextlib import suppress
+from datetime import datetime, timezone
 from pathlib import Path
 
 # SNOMED URI for nuclear material (nucleoplasm) - same as ETL script
