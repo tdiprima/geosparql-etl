@@ -26,10 +26,8 @@ Usage:
 
 import argparse
 import gzip
-import hashlib
 import re
 import sys
-from contextlib import suppress
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -47,8 +45,9 @@ def extract_tile_info_from_filename(filename):
     """
     # Remove extensions
     name = filename
-    for ext in (".gz", ".ttl"):
-        name = name.removesuffix(ext)
+    for ext in [".gz", ".ttl"]:
+        if name.endswith(ext):
+            name = name[: -len(ext)]
 
     # Pattern: PREFIX_X_Y_WIDTH_HEIGHT_REST-features
     # The prefix is the cancer type (e.g., "blca"), then underscore-separated numbers
@@ -58,10 +57,12 @@ def extract_tile_info_from_filename(filename):
     # Find the first part that looks like a number — that's the start of X_Y_W_H
     num_start = None
     for i, part in enumerate(parts):
-        with suppress(ValueError):
+        try:
             int(part)
             num_start = i
             break
+        except ValueError:
+            continue
 
     if num_start is not None and len(parts) >= num_start + 4:
         try:
@@ -229,10 +230,6 @@ def merge_image_tiles(image_dir, output_dir, compress=True, dry_run=False):
     image_hash = extract_image_hash_from_ttl(first_content)
     cancer_type = extract_cancer_type(tile_files[0].name)
 
-    # If no hash found in file, generate from image name
-    if not image_hash:
-        image_hash = hashlib.sha256(image_name.encode()).hexdigest()
-
     # Process all tile files: extract features and tile info
     all_features = []
     tile_infos = []
@@ -269,6 +266,27 @@ def merge_image_tiles(image_dir, output_dir, compress=True, dry_run=False):
     # Build the merged TTL
     timestamp = datetime.now(tz=timezone.utc).isoformat()
 
+    # Build image object and provenance differently depending on hash availability
+    if image_hash:
+        image_object_ttl = f"""<urn:sha256:{image_hash}>
+        a            so:ImageObject;
+        dc:identifier "{image_name}";
+        exif:width   "{img_width}"^^xsd:int;
+        exif:height  "{img_height}"^^xsd:int ."""
+        prov_ttl = f"""        prov:wasGeneratedBy  [ a                       prov:Activity;
+                               prov:used               <urn:sha256:{image_hash}>;
+                             ];"""
+    else:
+        image_object_ttl = f"""<urn:image:{image_name}>
+        a            so:ImageObject;
+        dc:identifier "{image_name}";
+        exif:width   "{img_width}"^^xsd:int;
+        exif:height  "{img_height}"^^xsd:int;
+        hal:hashMissing       "true"^^xsd:boolean ."""
+        prov_ttl = f"""        prov:wasGeneratedBy  [ a                       prov:Activity;
+                               prov:used               <urn:image:{image_name}>;
+                             ];"""
+
     ttl_header = f"""@prefix dc:   <http://purl.org/dc/terms/> .
 @prefix exif: <http://www.w3.org/2003/12/exif/ns#> .
 @prefix geo:  <http://www.opengis.net/ont/geosparql#> .
@@ -279,11 +297,7 @@ def merge_image_tiles(image_dir, output_dir, compress=True, dry_run=False):
 @prefix so:   <https://schema.org/> .
 @prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
 
-<urn:sha256:{image_hash}>
-        a            so:ImageObject;
-        dc:identifier "{image_name}";
-        exif:width   "{img_width}"^^xsd:int;
-        exif:height  "{img_height}"^^xsd:int .
+{image_object_ttl}
 
 <>      a                    geo:FeatureCollection;
         dc:creator           "${CREATOR_ORCID}";
@@ -296,9 +310,7 @@ def merge_image_tiles(image_dir, output_dir, compress=True, dry_run=False):
         hal:imageWidth       "{img_width}"^^xsd:int;
         hal:imageHeight      "{img_height}"^^xsd:int;
         hal:tileCount        "{total_files}"^^xsd:int;
-        prov:wasGeneratedBy  [ a                       prov:Activity;
-                               prov:used               <urn:sha256:{image_hash}>;
-                             ];
+{prov_ttl}
 """
 
     # Write output using streaming to handle large files
@@ -413,7 +425,7 @@ def main():
 
                 if status == "success":
                     success_count += 1
-                elif status in ("skip", "dry_run"):
+                elif status == "skip" or status == "dry_run":
                     skip_count += 1
                 else:
                     error_count += 1
