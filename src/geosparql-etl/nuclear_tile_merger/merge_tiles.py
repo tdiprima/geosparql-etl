@@ -29,6 +29,7 @@ import gzip
 import hashlib
 import re
 import sys
+from contextlib import suppress
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -46,9 +47,8 @@ def extract_tile_info_from_filename(filename):
     """
     # Remove extensions
     name = filename
-    for ext in [".gz", ".ttl"]:
-        if name.endswith(ext):
-            name = name[: -len(ext)]
+    for ext in (".gz", ".ttl"):
+        name = name.removesuffix(ext)
 
     # Pattern: PREFIX_X_Y_WIDTH_HEIGHT_REST-features
     # The prefix is the cancer type (e.g., "blca"), then underscore-separated numbers
@@ -58,12 +58,10 @@ def extract_tile_info_from_filename(filename):
     # Find the first part that looks like a number — that's the start of X_Y_W_H
     num_start = None
     for i, part in enumerate(parts):
-        try:
+        with suppress(ValueError):
             int(part)
             num_start = i
             break
-        except ValueError:
-            continue
 
     if num_start is not None and len(parts) >= num_start + 4:
         try:
@@ -415,7 +413,7 @@ def main():
 
                 if status == "success":
                     success_count += 1
-                elif status == "skip" or status == "dry_run":
+                elif status in ("skip", "dry_run"):
                     skip_count += 1
                 else:
                     error_count += 1

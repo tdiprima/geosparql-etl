@@ -278,8 +278,7 @@ def serialize_graph(
     if destination:
         graph.serialize(destination=destination, format=format)
         return None
-    else:
-        return graph.serialize(format=format)
+    return graph.serialize(format=format)
 
 
 def load_graph(source: str, format: str = "turtle") -> Graph:

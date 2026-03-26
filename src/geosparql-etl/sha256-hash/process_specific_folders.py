@@ -17,7 +17,7 @@ from typing import Dict, Tuple
 
 def load_hash_mapping(json_path: Path) -> Dict[str, str]:
     """Load the slide -> hash mapping from JSON file."""
-    with open(json_path, "r") as f:
+    with json_path.open("r") as f:
         data = json.load(f)
     mapping = {item["slide"]: item["hash"] for item in data}
     return mapping

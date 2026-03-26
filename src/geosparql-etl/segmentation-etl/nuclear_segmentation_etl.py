@@ -570,7 +570,7 @@ def main():
     print(f"Output directory:      {args.output}")
     print(f"Compression:           {'Enabled (gzip)' if args.compress else 'Disabled'}")
     print(
-        f"Parallel workers:      {args.workers if args.workers else f'{max(1, cpu_count() - 1)} (auto)'}"
+        f"Parallel workers:      {args.workers or f'{max(1, cpu_count() - 1)} (auto)'}"
     )
     if args.start_from:
         print(f"Start from image:      {args.start_from}")

@@ -142,13 +142,13 @@ def generate_script():
     # Make script executable
     script_path.chmod(0o755)
 
-    print(f"\n{'='*80}")
+    print("\n" + "=" * 80)
     print(f"Generated script: {script_path.absolute()}")
     print(f"Output JSON file will be: {json_output}")
     print(f"Total slides to process: {len(svs_file_info)}")
     print("\nTo run the generated script:")
     print(f"  ./{script_path.name}")
-    print(f"{'='*80}")
+    print("=" * 80)
 
 
 if __name__ == "__main__":

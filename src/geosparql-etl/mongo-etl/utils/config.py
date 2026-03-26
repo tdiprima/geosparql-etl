@@ -174,7 +174,7 @@ def load_config_from_file(config_path: str) -> AppConfig:
     if not config_file.exists():
         raise FileNotFoundError(f"Config file not found: {config_path}")
 
-    with open(config_file, "r") as f:
+    with config_file.open("r") as f:
         if config_path.endswith(".json"):
             config_dict = json.load(f)
         elif config_path.endswith((".yaml", ".yml")):

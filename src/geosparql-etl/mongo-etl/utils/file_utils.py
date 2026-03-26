@@ -39,7 +39,7 @@ def ensure_parent_directory(file_path: str) -> Path:
         # Creates "output/data/" if it doesn't exist
     """
     file_path_obj = Path(file_path)
-    if file_path_obj.parent != Path("."):
+    if file_path_obj.parent != Path():
         file_path_obj.parent.mkdir(parents=True, exist_ok=True)
     return file_path_obj.parent
 

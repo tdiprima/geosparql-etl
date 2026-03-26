@@ -257,4 +257,4 @@ def safe_geometry_to_wkt(mark: Dict[str, Any], default: str = "POINT EMPTY") -> 
         # Always returns a valid WKT string
     """
     wkt = geometry_to_wkt(mark)
-    return wkt if wkt else default
+    return wkt or default

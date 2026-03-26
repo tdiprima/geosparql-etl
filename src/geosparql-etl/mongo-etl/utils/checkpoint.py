@@ -36,7 +36,7 @@ class CheckpointManager:
         """
         if self.checkpoint_file.exists():
             try:
-                with open(self.checkpoint_file, "r") as f:
+                with self.checkpoint_file.open("r") as f:
                     return json.load(f)
             except json.JSONDecodeError:
                 return self._default_checkpoint()
@@ -58,7 +58,7 @@ class CheckpointManager:
     def save(self) -> None:
         """Save checkpoint data to file."""
         self.data["last_updated"] = datetime.now().isoformat()
-        with open(self.checkpoint_file, "w") as f:
+        with self.checkpoint_file.open("w") as f:
             json.dump(self.data, f, indent=2)
 
     def mark_processed(self, *identifiers: str) -> None:
@@ -186,7 +186,7 @@ class SimpleCheckpoint:
         """
         if self.checkpoint_file.exists():
             try:
-                with open(self.checkpoint_file, "r") as f:
+                with self.checkpoint_file.open("r") as f:
                     data = json.load(f)
                     if isinstance(data, list):
                         return set(data)
@@ -198,7 +198,7 @@ class SimpleCheckpoint:
 
     def save(self) -> None:
         """Save checkpoint to file."""
-        with open(self.checkpoint_file, "w") as f:
+        with self.checkpoint_file.open("w") as f:
             json.dump(list(self.processed), f, indent=2)
 
     def add(self, item_id: str) -> None:

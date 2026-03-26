@@ -30,7 +30,7 @@ def compute_sha256(file_path: Path) -> Optional[str]:
 
     try:
         h = hashlib.sha256()
-        with open(file_path, "rb") as f:
+        with file_path.open("rb") as f:
             for chunk in iter(lambda: f.read(1024 * 1024), b""):
                 h.update(chunk)
         return h.hexdigest()
@@ -48,8 +48,7 @@ def update_ttl_file(ttl_path: Path, sha256_hash: Optional[str]) -> None:
         sha256_hash: SHA256 hash string, or None if file is missing
     """
     # Read the entire TTL file
-    with open(ttl_path, "r", encoding="utf-8") as f:
-        content = f.read()
+    content = ttl_path.read_text(encoding="utf-8")
 
     if sha256_hash:
         # Update the hash value in existing urn:sha256: URNs
@@ -71,7 +70,7 @@ def update_ttl_file(ttl_path: Path, sha256_hash: Optional[str]) -> None:
             print(f"Warning: Could not add hal:missing to {ttl_path.name}")
 
     # Write the updated content back
-    with open(ttl_path, "w", encoding="utf-8") as f:
+    with ttl_path.open("w", encoding="utf-8") as f:
         f.write(updated_content)
 
 

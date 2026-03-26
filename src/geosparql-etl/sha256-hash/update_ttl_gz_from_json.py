@@ -31,7 +31,7 @@ def load_hash_mapping(json_path: Path) -> Dict[str, str]:
     Returns:
         Dictionary mapping slide names to SHA256 hashes
     """
-    with open(json_path, "r") as f:
+    with json_path.open("r") as f:
         data = json.load(f)
 
     # Convert list of dicts to a simple slide->hash mapping
