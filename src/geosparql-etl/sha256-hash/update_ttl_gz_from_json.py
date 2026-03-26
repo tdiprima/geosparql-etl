@@ -12,13 +12,13 @@ Usage:
     python update_ttl_gz_from_json.py --start-from <name> # Resume from specific folder
 """
 
+import argparse
 import gzip
 import json
 import re
+from multiprocessing import Pool, cpu_count
 from pathlib import Path
 from typing import Dict, List, Tuple
-from multiprocessing import Pool, cpu_count
-import argparse
 
 
 def load_hash_mapping(json_path: Path) -> Dict[str, str]:
