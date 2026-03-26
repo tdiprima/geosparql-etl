@@ -29,6 +29,7 @@ import gzip
 import re
 import sys
 from datetime import datetime, timezone
+from contextlib import suppress
 from pathlib import Path
 
 # SNOMED URI for nuclear material (nucleoplasm) - same as ETL script
@@ -45,9 +46,8 @@ def extract_tile_info_from_filename(filename):
     """
     # Remove extensions
     name = filename
-    for ext in [".gz", ".ttl"]:
-        if name.endswith(ext):
-            name = name[: -len(ext)]
+    for ext in (".gz", ".ttl"):
+        name = name.removesuffix(ext)
 
     # Pattern: PREFIX_X_Y_WIDTH_HEIGHT_REST-features
     # The prefix is the cancer type (e.g., "blca"), then underscore-separated numbers
@@ -65,15 +65,13 @@ def extract_tile_info_from_filename(filename):
             continue
 
     if num_start is not None and len(parts) >= num_start + 4:
-        try:
+        with suppress(ValueError):
             return {
                 "x": int(parts[num_start]),
                 "y": int(parts[num_start + 1]),
                 "width": int(parts[num_start + 2]),
                 "height": int(parts[num_start + 3]),
             }
-        except ValueError:
-            pass
 
     return None
 
@@ -425,7 +423,7 @@ def main():
 
                 if status == "success":
                     success_count += 1
-                elif status == "skip" or status == "dry_run":
+                elif status in ("skip", "dry_run"):
                     skip_count += 1
                 else:
                     error_count += 1
