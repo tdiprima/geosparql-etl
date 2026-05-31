@@ -1,5 +1,6 @@
 """
-Shared ETL core: polygon parsing, image hashing, TTL generation, and CSV-to-file dispatch.
+Shared ETL core: polygon parsing, image hashing, TTL generation, CSV-to-file dispatch,
+and single-cancer-type directory traversal.
 
 Used by nuclear_segmentation_etl.py and single_cancer_etl.py.
 """
@@ -10,6 +11,8 @@ import hashlib
 import subprocess
 from contextlib import suppress
 from datetime import datetime, timezone
+from functools import partial
+from multiprocessing import Pool, cpu_count
 from pathlib import Path
 
 # SNOMED URI for nuclear material (nucleoplasm)
@@ -123,33 +126,54 @@ def get_image_hash(image_path=None, image_id=None):
     return hashlib.sha256(b"unknown").hexdigest()
 
 
-def create_geosparql_ttl(csv_path, image_name, image_hash=None, cancer_type=None):
+def read_segmentation_rows(csv_path):
     """
-    Convert nuclear segmentation CSV to GeoSPARQL TTL format.
+    Read nuclear segmentation features from a CSV file.
 
     Args:
-        csv_path: Path to CSV file (contains patch data)
-        image_name: Name of the parent SVS image (from directory name)
-        image_hash: SHA-256 hash of image (optional, generated from image_name if not provided)
-        cancer_type: Cancer type identifier (e.g., "blca") extracted from polygon directory
+        csv_path: Path to CSV file
+
+    Returns:
+        list of dicts with keys: polygon_str, area_pixels, physical_size
+    """
+    rows = []
+    with open(csv_path, "r") as csvfile:
+        reader = csv.DictReader(csvfile)
+        for row in reader:
+            rows.append({
+                "polygon_str": row.get("Polygon", ""),
+                "area_pixels": row.get("AreaInPixels", ""),
+                "physical_size": row.get("PhysicalSize", ""),
+            })
+    return rows
+
+
+def render_feature_collection_ttl(
+    rows, patch_info, image_name, image_hash, cancer_type, timestamp
+):
+    """
+    Render a GeoSPARQL Turtle document from pre-read segmentation rows.
+    Pure function: no I/O, fully deterministic given the same inputs.
+
+    Args:
+        rows: list of dicts from read_segmentation_rows
+        patch_info: dict with x, y, width, height from extract_image_info_from_filename
+        image_name: Name of the parent SVS image
+        image_hash: SHA-256 hash of image
+        cancer_type: Cancer type identifier (e.g., "blca"), or None
+        timestamp: ISO-8601 datetime string for dc:date
 
     Returns:
         Turtle/RDF content as string
     """
-    csv_path = Path(csv_path)
-    filename = csv_path.name
-
-    # Extract patch info from CSV filename (x, y, width, height)
-    patch_info = extract_image_info_from_filename(filename)
-
-    # Generate image hash from image name if not provided
-    if image_hash is None:
-        image_hash = get_image_hash(image_id=image_name)
-
-    timestamp = datetime.now(tz=timezone.utc).isoformat()
+    snomed_id = NUCLEAR_MATERIAL_SNOMED.split("/")[-1]
+    patch_desc = (
+        f"patch {patch_info['x']}_{patch_info['y']} "
+        f"({patch_info['width']}x{patch_info['height']})"
+    )
 
     # TTL header with prefixes
-    ttl_content = """@prefix dc:   <http://purl.org/dc/terms/> .
+    ttl = """@prefix dc:   <http://purl.org/dc/terms/> .
 @prefix exif: <http://www.w3.org/2003/12/exif/ns#> .
 @prefix geo:  <http://www.opengis.net/ont/geosparql#> .
 @prefix hal:  <https://halcyon.is/ns/> .
@@ -162,18 +186,14 @@ def create_geosparql_ttl(csv_path, image_name, image_hash=None, cancer_type=None
 """
 
     # Add image object (SVS image - we don't have actual dimensions)
-    ttl_content += f"""<urn:sha256:{image_hash}>
+    ttl += f"""<urn:sha256:{image_hash}>
         a            so:ImageObject;
         dc:identifier "{image_name}" .
 
 """
 
-    # Start feature collection with <> as the subject (self-reference)
-    # Include patch dimensions in description
-    patch_desc = f"patch {patch_info['x']}_{patch_info['y']} ({patch_info['width']}x{patch_info['height']})"
-
-    # Build the feature collection with optional cancer type
-    ttl_content += f"""<>      a                    geo:FeatureCollection;
+    # Feature collection header
+    ttl += f"""<>      a                    geo:FeatureCollection;
         dc:creator           "${CREATOR_ORCID}";
         dc:date              "{timestamp}"^^xsd:dateTime;
         dc:description       "Nuclear segmentation predictions for {image_name} - {patch_desc}";
@@ -181,12 +201,11 @@ def create_geosparql_ttl(csv_path, image_name, image_hash=None, cancer_type=None
         dc:references        "${DATASET_DOI}";
         dc:title             "nuclear-segmentation-predictions";"""
 
-    # Add cancer type if provided
     if cancer_type:
-        ttl_content += f"""
+        ttl += f"""
         hal:cancerType       "{cancer_type}";"""
 
-    ttl_content += f"""
+    ttl += f"""
         hal:patchX           "{patch_info['x']}"^^xsd:int;
         hal:patchY           "{patch_info['y']}"^^xsd:int;
         hal:patchWidth       "{patch_info['width']}"^^xsd:int;
@@ -196,56 +215,66 @@ def create_geosparql_ttl(csv_path, image_name, image_hash=None, cancer_type=None
                              ];
 """
 
-    # Read CSV and process features
-    feature_count = 0
-    snomed_id = NUCLEAR_MATERIAL_SNOMED.split("/")[-1]
+    # Build each feature string, then join with ";\n" — no fragile counter needed
+    feature_strings = []
+    for row in rows:
+        if not row["polygon_str"]:
+            continue
+        wkt = parse_polygon_to_wkt(row["polygon_str"])
+        if not wkt:
+            continue
 
-    with open(csv_path, "r") as csvfile:
-        reader = csv.DictReader(csvfile)
-
-        for row in reader:
-            area_pixels = row.get("AreaInPixels", "")
-            physical_size = row.get("PhysicalSize", "")
-            polygon_str = row.get("Polygon", "")
-
-            if not polygon_str:
-                continue
-
-            # Convert polygon to WKT
-            wkt = parse_polygon_to_wkt(polygon_str)
-
-            if not wkt:
-                continue
-
-            # Add separator for multiple features
-            if feature_count > 0:
-                ttl_content += ";\n"
-
-            # Add feature with proper indentation for <> subject
-            # Use probability of 1.0 as placeholder (as per requirements)
-            ttl_content += f"""        rdfs:member          [ a                   geo:Feature;
+        # Add feature with proper indentation for <> subject
+        # Use probability of 1.0 as placeholder (as per requirements)
+        feature = f"""        rdfs:member          [ a                   geo:Feature;
                                geo:hasGeometry     [ geo:asWKT  "{wkt}"^^geo:wktLiteral ];
                                hal:classification  sno:{snomed_id};
                                hal:measurement     [ hal:hasProbability  "1.0"^^xsd:float ]"""
 
-            # Optionally include area information as additional properties
-            if area_pixels:
-                ttl_content += f""";
-                               hal:areaInPixels    "{area_pixels}"^^xsd:int"""
+        # Optionally include area information as additional properties
+        if row["area_pixels"]:
+            feature += f""";
+                               hal:areaInPixels    "{row['area_pixels']}"^^xsd:int"""
 
-            if physical_size:
-                ttl_content += f""";
-                               hal:physicalSize    "{physical_size}"^^xsd:float"""
+        if row["physical_size"]:
+            feature += f""";
+                               hal:physicalSize    "{row['physical_size']}"^^xsd:float"""
 
-            # Close the feature
-            ttl_content += """
+        feature += """
                              ]"""
-            feature_count += 1
+        feature_strings.append(feature)
 
-    # Close the feature collection with proper terminator
-    ttl_content += " .\n"
+    ttl += ";\n".join(feature_strings)
+    ttl += " .\n"
+    return ttl
 
-    return ttl_content
+
+def create_geosparql_ttl(csv_path, image_name, image_hash=None, cancer_type=None):
+    """
+    Convert nuclear segmentation CSV to GeoSPARQL TTL format.
+
+    Thin wrapper: reads the CSV then delegates to render_feature_collection_ttl.
+
+    Args:
+        csv_path: Path to CSV file (contains patch data)
+        image_name: Name of the parent SVS image (from directory name)
+        image_hash: SHA-256 hash of image (optional, generated from image_name if not provided)
+        cancer_type: Cancer type identifier (e.g., "blca") extracted from polygon directory
+
+    Returns:
+        Turtle/RDF content as string
+    """
+    csv_path = Path(csv_path)
+    patch_info = extract_image_info_from_filename(csv_path.name)
+
+    if image_hash is None:
+        image_hash = get_image_hash(image_id=image_name)
+
+    timestamp = datetime.now(tz=timezone.utc).isoformat()
+    rows = read_segmentation_rows(csv_path)
+    return render_feature_collection_ttl(
+        rows, patch_info, image_name, image_hash, cancer_type, timestamp
+    )
 
 
 def process_single_csv(
@@ -296,3 +325,147 @@ def process_single_csv(
 
     except Exception as e:
         return ("error", csv_file.name, str(e))
+
+
+def process_cancer_type_directory(
+    cancer_type_dir, output_dir, compress=False, start_from_image=None, workers=None
+):
+    """
+    Process a single cancer type directory (e.g., coad_polygon).
+
+    Directory structure:
+        coad_polygon/
+            TCGA-*.svs.tar.gz/
+                coad_polygon/
+                    TCGA-*.svs/
+                        X_Y_WIDTH_HEIGHT_INFO-features.csv
+
+    Args:
+        cancer_type_dir: Path to a single *_polygon directory
+        output_dir: Directory for output TTL files
+        compress: If True, gzip compress the output files
+        start_from_image: If provided, skip images until this one is reached
+        workers: Number of parallel workers (default: cpu_count - 1)
+
+    Returns:
+        tuple: (success_count, error_count, skipped_count, found_start_image)
+    """
+    input_path = Path(cancer_type_dir)
+    output_path = Path(output_dir)
+
+    if not input_path.is_dir():
+        print(f"Error: directory not found: {cancer_type_dir}", flush=True)
+        return (0, 0, 0, start_from_image is None)
+
+    if workers is None:
+        workers = max(1, cpu_count() - 1)
+
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    # Extract cancer type from directory name (e.g., "coad" from "coad_polygon")
+    cancer_type = input_path.name.replace("_polygon", "")
+    prefix = cancer_type + "_"
+
+    print(f"Processing cancer type: {input_path.name} (type: {cancer_type})")
+    print(f"Using {workers} parallel workers")
+
+    # Find all *.svs.tar.gz subdirectories
+    tar_gz_dirs = sorted(
+        d for d in input_path.iterdir()
+        if d.is_dir() and d.name.endswith(".svs.tar.gz")
+    )
+
+    if not tar_gz_dirs:
+        print(f"No .svs.tar.gz directories found in {input_path.name}")
+        return (0, 0, 0, start_from_image is None)
+
+    print(f"Found {len(tar_gz_dirs)} slide directories")
+
+    total_success = 0
+    total_error = 0
+    total_skipped = 0
+    found_start_image = start_from_image is None
+
+    for tar_gz_dir in tar_gz_dirs:
+        # Find the inner *_polygon directory
+        inner_polygon_dirs = [
+            d for d in tar_gz_dir.iterdir()
+            if d.is_dir() and d.name.endswith("_polygon")
+        ]
+
+        if not inner_polygon_dirs:
+            print(f"  No inner polygon directory found in {tar_gz_dir.name}")
+            continue
+
+        for inner_polygon_dir in inner_polygon_dirs:
+            # Find all *.svs subdirectories
+            svs_dirs = sorted(
+                d for d in inner_polygon_dir.iterdir()
+                if d.is_dir() and d.name.endswith(".svs")
+            )
+
+            if not svs_dirs:
+                print(f"  No .svs directories found in {inner_polygon_dir.name}")
+                continue
+
+            for svs_dir in svs_dirs:
+                image_name = svs_dir.name
+
+                if not found_start_image:
+                    if image_name == start_from_image:
+                        found_start_image = True
+                        print(f"  Starting from image: {image_name}")
+                    else:
+                        print(f"  Skipping (before start point): {image_name}")
+                        continue
+                else:
+                    print(f"  Processing image: {image_name}")
+
+                csv_files = list(svs_dir.glob("*-features.csv"))
+
+                if not csv_files:
+                    print(f"    No CSV files found in {image_name}")
+                    continue
+
+                print(f"    Found {len(csv_files)} patch CSV files")
+
+                image_hash = get_image_hash(image_id=image_name)
+
+                worker_func = partial(
+                    process_single_csv,
+                    image_name=image_name,
+                    image_hash=image_hash,
+                    cancer_type=cancer_type,
+                    prefix=prefix,
+                    output_path=output_path,
+                    compress=compress,
+                )
+
+                with Pool(processes=workers) as pool:
+                    results = pool.map(worker_func, csv_files)
+
+                success_count = 0
+                error_count = 0
+                skipped_count = 0
+
+                for result in results:
+                    if result[0] == "success":
+                        success_count += 1
+                    elif result[0] == "skipped":
+                        skipped_count += 1
+                    elif result[0] == "error":
+                        error_count += 1
+                        error_msg = result[2] if len(result) > 2 else "Unknown error"
+                        print(f"      Error processing {result[1]}: {error_msg}")
+
+                print(f"    Processed {success_count} patches successfully")
+                if skipped_count > 0:
+                    print(f"    Skipped {skipped_count} patches (already exist)")
+                if error_count > 0:
+                    print(f"    {error_count} errors")
+
+                total_success += success_count
+                total_error += error_count
+                total_skipped += skipped_count
+
+    return (total_success, total_error, total_skipped, found_start_image)

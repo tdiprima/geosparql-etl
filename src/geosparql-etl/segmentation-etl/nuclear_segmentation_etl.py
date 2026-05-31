@@ -23,8 +23,7 @@ python nuclear_segmentation_etl.py --help
 """
 
 import argparse
-from functools import partial
-from multiprocessing import Pool, cpu_count
+from multiprocessing import cpu_count
 from pathlib import Path
 
 try:
@@ -34,14 +33,14 @@ try:
 except ImportError:
     rich_argparse = None
 
-from etl_core import get_image_hash, process_single_csv
+from etl_core import process_cancer_type_directory
 
 
 def process_image_directories(
     input_base_dir, output_dir, compress=False, start_from_image=None, workers=None
 ):
     """
-    Process directories of SVS images, where each directory contains CSV patch files.
+    Process all cancer type directories under input_base_dir.
 
     Directory structure:
         input_base_dir/
@@ -60,157 +59,44 @@ def process_image_directories(
         workers: Number of parallel workers (default: cpu_count - 1)
     """
     input_path = Path(input_base_dir)
-    output_path = Path(output_dir)
-
-    # Set number of workers
-    if workers is None:
-        workers = max(1, cpu_count() - 1)  # Leave one core free
-
-    # Create output directory if it doesn't exist
-    output_path.mkdir(parents=True, exist_ok=True)
 
     # Find all top-level cancer type folders (*_polygon)
-    cancer_type_dirs = [
+    cancer_type_dirs = sorted(
         d for d in input_path.iterdir() if d.is_dir() and d.name.endswith("_polygon")
-    ]
+    )
 
     if not cancer_type_dirs:
         print(f"No *_polygon directories found in {input_base_dir}")
         return
 
     print(f"Found {len(cancer_type_dirs)} cancer type directories to process")
-    print(f"Using {workers} parallel workers")
 
     total_success = 0
     total_error = 0
     total_skipped = 0
-    found_start_image = (
-        start_from_image is None
-    )  # If no start image specified, start immediately
+    found_start_image = start_from_image is None
 
     for cancer_type_dir in cancer_type_dirs:
-        # Extract cancer type from directory name (e.g., "blca" from "blca_polygon")
-        cancer_type_name = cancer_type_dir.name
-        cancer_type = cancer_type_name.replace("_polygon", "")
-        prefix = cancer_type + "_"
+        # Once the start image has been found in an earlier cancer-type dir,
+        # pass None so subsequent dirs start immediately.
+        current_start = None if found_start_image else start_from_image
 
-        print(f"\nProcessing cancer type: {cancer_type_name} (type: {cancer_type})")
+        success, errors, skipped, found = process_cancer_type_directory(
+            cancer_type_dir, output_dir, compress, current_start, workers
+        )
 
-        # Find all *.svs.tar.gz subdirectories within the cancer type folder
-        tar_gz_dirs = [
-            d
-            for d in cancer_type_dir.iterdir()
-            if d.is_dir() and d.name.endswith(".svs.tar.gz")
-        ]
+        if found:
+            found_start_image = True
 
-        if not tar_gz_dirs:
-            print(f"  ⚠ No .svs.tar.gz directories found in {cancer_type_name}")
-            continue
-
-        print(f"  Found {len(tar_gz_dirs)} slide directories")
-
-        for tar_gz_dir in tar_gz_dirs:
-            # Find the inner *_polygon directory
-            inner_polygon_dirs = [
-                d
-                for d in tar_gz_dir.iterdir()
-                if d.is_dir() and d.name.endswith("_polygon")
-            ]
-
-            if not inner_polygon_dirs:
-                print(f"    ⚠ No inner polygon directory found in {tar_gz_dir.name}")
-                continue
-
-            # Process each inner polygon directory (should typically be just one)
-            for inner_polygon_dir in inner_polygon_dirs:
-                # Find all *.svs subdirectories
-                svs_dirs = [
-                    d
-                    for d in inner_polygon_dir.iterdir()
-                    if d.is_dir() and d.name.endswith(".svs")
-                ]
-
-                if not svs_dirs:
-                    print(
-                        f"    ⚠ No .svs directories found in {inner_polygon_dir.name}"
-                    )
-                    continue
-
-                for svs_dir in svs_dirs:
-                    image_name = svs_dir.name
-
-                    # Check if we should skip this image (before start_from_image)
-                    if not found_start_image:
-                        if image_name == start_from_image:
-                            found_start_image = True
-                            print(f"  ▶ Starting from image: {image_name}")
-                        else:
-                            print(
-                                f"  ⏭ Skipping image (before start point): {image_name}"
-                            )
-                            continue
-                    else:
-                        print(f"  Processing image: {image_name}")
-
-                    # Get all CSV files in this SVS directory
-                    csv_files = list(svs_dir.glob("*-features.csv"))
-
-                    if not csv_files:
-                        print(f"    ⚠ No CSV files found in {image_name}")
-                        continue
-
-                    print(f"    Found {len(csv_files)} patch CSV files")
-
-                    # Generate image hash once for all patches
-                    image_hash = get_image_hash(image_id=image_name)
-
-                    success_count = 0
-                    error_count = 0
-                    skipped_count = 0
-
-                    # Create worker function with fixed parameters
-                    worker_func = partial(
-                        process_single_csv,
-                        image_name=image_name,
-                        image_hash=image_hash,
-                        cancer_type=cancer_type,
-                        prefix=prefix,
-                        output_path=output_path,
-                        compress=compress,
-                    )
-
-                    # Process CSV files in parallel
-                    with Pool(processes=workers) as pool:
-                        results = pool.map(worker_func, csv_files)
-
-                    # Count results
-                    for result in results:
-                        if result[0] == "success":
-                            success_count += 1
-                        elif result[0] == "skipped":
-                            skipped_count += 1
-                        elif result[0] == "error":
-                            error_count += 1
-                            error_msg = (
-                                result[2] if len(result) > 2 else "Unknown error"
-                            )
-                            print(f"      ✗ Error processing {result[1]}: {error_msg}")
-
-                    print(f"    ✓ Processed {success_count} patches successfully")
-                    if skipped_count > 0:
-                        print(f"    ⏭ Skipped {skipped_count} patches (already exist)")
-                    if error_count > 0:
-                        print(f"    ✗ {error_count} errors")
-
-                    total_success += success_count
-                    total_error += error_count
-                    total_skipped += skipped_count
+        total_success += success
+        total_error += errors
+        total_skipped += skipped
 
     print("\n" + "=" * 60)
     print("Processing complete!")
     print(f"  Total success: {total_success} files")
     print(f"  Total skipped: {total_skipped} files (already processed)")
-    print(f"  Total errors: {total_error} files")
+    print(f"  Total errors:  {total_error} files")
 
 
 def main():
