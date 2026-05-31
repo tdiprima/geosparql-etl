@@ -32,3 +32,4 @@ checkpoints/
 .claude/
 *.log
 *.csv
+.codegraph/
