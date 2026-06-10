@@ -8,6 +8,7 @@ Used by nuclear_segmentation_etl.py and single_cancer_etl.py.
 import csv
 import gzip
 import hashlib
+import os
 import subprocess
 from contextlib import suppress
 from datetime import datetime, timezone
@@ -18,6 +19,13 @@ from pathlib import Path
 # SNOMED URI for nuclear material (nucleoplasm)
 # Using SNOMED code for nuclear material/nucleoplasm
 NUCLEAR_MATERIAL_SNOMED = "http://snomed.info/id/68841002"  # Nucleoplasm
+
+# Whitespace-aligned prefix for an rdfs:member line inside a FeatureCollection.
+# Kept as a constant so per-patch and per-slide renderers emit identical formatting.
+MEMBER_PREFIX = "        rdfs:member          "
+
+# Placeholder probability used when the source data carries no per-polygon score.
+PROBABILITY_PLACEHOLDER = "1.0"
 
 
 def parse_polygon_to_wkt(polygon_string):
@@ -148,6 +156,47 @@ def read_segmentation_rows(csv_path):
     return rows
 
 
+def render_feature_member(row, snomed_id):
+    """
+    Render a single geo:Feature block (the value of an rdfs:member predicate).
+
+    Pure function. Returns the bracketed Turtle blank-node string starting at
+    "[" and ending at "]", or None when the row has no usable polygon.
+
+    Args:
+        row: dict from read_segmentation_rows (polygon_str, area_pixels, physical_size)
+        snomed_id: SNOMED code for the feature classification
+
+    Returns:
+        Turtle blank-node string, or None to skip the row
+    """
+    if not row["polygon_str"]:
+        return None
+
+    wkt = parse_polygon_to_wkt(row["polygon_str"])
+    if not wkt:
+        return None
+
+    # Use a placeholder probability of 1.0 (source data has no per-polygon score)
+    member = f"""[ a                   geo:Feature;
+                               geo:hasGeometry     [ geo:asWKT  "{wkt}"^^geo:wktLiteral ];
+                               hal:classification  sno:{snomed_id};
+                               hal:measurement     [ hal:hasProbability  "{PROBABILITY_PLACEHOLDER}"^^xsd:float ]"""
+
+    # Optionally include area information as additional properties
+    if row["area_pixels"]:
+        member += f""";
+                               hal:areaInPixels    "{row['area_pixels']}"^^xsd:int"""
+
+    if row["physical_size"]:
+        member += f""";
+                               hal:physicalSize    "{row['physical_size']}"^^xsd:float"""
+
+    member += """
+                             ]"""
+    return member
+
+
 def render_feature_collection_ttl(
     rows, patch_info, image_name, image_hash, cancer_type, timestamp
 ):
@@ -218,31 +267,10 @@ def render_feature_collection_ttl(
     # Build each feature string, then join with ";\n" — no fragile counter needed
     feature_strings = []
     for row in rows:
-        if not row["polygon_str"]:
+        member = render_feature_member(row, snomed_id)
+        if member is None:
             continue
-        wkt = parse_polygon_to_wkt(row["polygon_str"])
-        if not wkt:
-            continue
-
-        # Add feature with proper indentation for <> subject
-        # Use probability of 1.0 as placeholder (as per requirements)
-        feature = f"""        rdfs:member          [ a                   geo:Feature;
-                               geo:hasGeometry     [ geo:asWKT  "{wkt}"^^geo:wktLiteral ];
-                               hal:classification  sno:{snomed_id};
-                               hal:measurement     [ hal:hasProbability  "1.0"^^xsd:float ]"""
-
-        # Optionally include area information as additional properties
-        if row["area_pixels"]:
-            feature += f""";
-                               hal:areaInPixels    "{row['area_pixels']}"^^xsd:int"""
-
-        if row["physical_size"]:
-            feature += f""";
-                               hal:physicalSize    "{row['physical_size']}"^^xsd:float"""
-
-        feature += """
-                             ]"""
-        feature_strings.append(feature)
+        feature_strings.append(MEMBER_PREFIX + member)
 
     ttl += ";\n".join(feature_strings)
     ttl += " .\n"
@@ -469,3 +497,405 @@ def process_cancer_type_directory(
                 total_skipped += skipped_count
 
     return (total_success, total_error, total_skipped, found_start_image)
+
+
+# ---------------------------------------------------------------------------
+# Per-slide ("one TTL per whole-slide image") pipeline
+#
+# The functions above emit one TTL per patch CSV. The functions below instead
+# integrate every polygon from every patch of a single .svs image into ONE
+# TTL FeatureCollection, so the downstream converter produces one HDF5 per
+# image. Polygon coordinates are written as-is (already in whole-slide space);
+# the image width/height is the bounding box over all patches.
+# ---------------------------------------------------------------------------
+
+
+def compute_slide_dimensions(csv_files):
+    """
+    Compute whole-slide width and height from patch filenames.
+
+    Each patch filename encodes its X_Y_WIDTH_HEIGHT offset within the slide.
+    The slide extent is the maximum (x + width) and (y + height) over all patches.
+
+    Args:
+        csv_files: iterable of patch CSV Paths
+
+    Returns:
+        tuple (slide_width, slide_height) in pixels
+    """
+    slide_width = 0
+    slide_height = 0
+    for csv_file in csv_files:
+        info = extract_image_info_from_filename(csv_file.name)
+        slide_width = max(slide_width, info["x"] + info["width"])
+        slide_height = max(slide_height, info["y"] + info["height"])
+    return slide_width, slide_height
+
+
+def render_slide_ttl_header(
+    image_name, image_hash, cancer_type, slide_width, slide_height, patch_count, timestamp
+):
+    """
+    Render the TTL header for a merged whole-slide FeatureCollection.
+
+    Pure function. The returned string ends after the prov:wasGeneratedBy block
+    with a trailing ';' and newline, ready for rdfs:member lines to be appended.
+
+    Args:
+        image_name: Name of the parent SVS image
+        image_hash: SHA-256 hash of the image
+        cancer_type: Cancer type identifier (e.g., "coad"), or None
+        slide_width: Whole-slide width in pixels
+        slide_height: Whole-slide height in pixels
+        patch_count: Number of source patch CSV files merged
+        timestamp: ISO-8601 datetime string for dc:date
+
+    Returns:
+        Turtle header string
+    """
+    header = f"""@prefix dc:   <http://purl.org/dc/terms/> .
+@prefix exif: <http://www.w3.org/2003/12/exif/ns#> .
+@prefix geo:  <http://www.opengis.net/ont/geosparql#> .
+@prefix hal:  <https://halcyon.is/ns/> .
+@prefix prov: <http://www.w3.org/ns/prov#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix sno:  <http://snomed.info/id/> .
+@prefix so:   <https://schema.org/> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+
+<urn:sha256:{image_hash}>
+        a            so:ImageObject;
+        dc:identifier "{image_name}";
+        exif:width   "{slide_width}"^^xsd:int;
+        exif:height  "{slide_height}"^^xsd:int .
+
+<>      a                    geo:FeatureCollection;
+        dc:creator           "${CREATOR_ORCID}";
+        dc:date              "{timestamp}"^^xsd:dateTime;
+        dc:description       "Nuclear segmentation predictions for {image_name} - merged from {patch_count} patches";
+        dc:publisher         <${PUBLISHER_ROR_1}> , <${PUBLISHER_ROR_2}>;
+        dc:references        "${DATASET_DOI}";
+        dc:title             "nuclear-segmentation-predictions";"""
+
+    if cancer_type:
+        header += f"""
+        hal:cancerType       "{cancer_type}";"""
+
+    header += f"""
+        hal:imageWidth       "{slide_width}"^^xsd:int;
+        hal:imageHeight      "{slide_height}"^^xsd:int;
+        hal:patchCount       "{patch_count}"^^xsd:int;
+        prov:wasGeneratedBy  [ a                       prov:Activity;
+                               prov:used               <urn:sha256:{image_hash}>;
+                             ];
+"""
+    return header
+
+
+def write_slide_ttl(csv_files, output_file, image_name, cancer_type, compress):
+    """
+    Stream all patches of one slide into a single TTL FeatureCollection.
+
+    Writes to a temporary file first, then atomically renames it into place, so
+    an interrupted run never leaves a half-written file that resume logic would
+    mistake for a completed one. Streaming keeps memory flat regardless of how
+    many polygons the slide contains.
+
+    Args:
+        csv_files: list of patch CSV Paths for this slide (non-empty)
+        output_file: destination Path for the merged TTL
+        image_name: Name of the parent SVS image
+        cancer_type: Cancer type identifier, or None
+        compress: If True, gzip the output
+
+    Returns:
+        Number of feature members written
+    """
+    image_hash = get_image_hash(image_id=image_name)
+    slide_width, slide_height = compute_slide_dimensions(csv_files)
+    timestamp = datetime.now(tz=timezone.utc).isoformat()
+    header = render_slide_ttl_header(
+        image_name,
+        image_hash,
+        cancer_type,
+        slide_width,
+        slide_height,
+        len(csv_files),
+        timestamp,
+    )
+
+    snomed_id = NUCLEAR_MATERIAL_SNOMED.split("/")[-1]
+    tmp_file = output_file.with_name(output_file.name + ".tmp")
+    open_func = gzip.open if compress else open
+
+    feature_count = 0
+    with open_func(tmp_file, "wt", encoding="utf-8") as out:
+        out.write(header)
+        for csv_file in csv_files:
+            for row in read_segmentation_rows(csv_file):
+                member = render_feature_member(row, snomed_id)
+                if member is None:
+                    continue
+                # Header already ends with ';'; separate subsequent members only.
+                if feature_count > 0:
+                    out.write(";\n")
+                out.write(MEMBER_PREFIX + member)
+                feature_count += 1
+        out.write(" .\n")
+
+    os.replace(tmp_file, output_file)
+    return feature_count
+
+
+def slide_output_filename(cancer_type, image_name, compress):
+    """Build the flat per-slide output filename: <cancer>_<image>.ttl[.gz]."""
+    name = f"{cancer_type}_{image_name}.ttl"
+    if compress:
+        name += ".gz"
+    return name
+
+
+def process_single_slide(slide_and_type, output_path, compress):
+    """
+    Process one whole-slide image directory into a single TTL file.
+
+    Designed to be called in parallel (one task per slide).
+
+    Args:
+        slide_and_type: tuple (svs_dir Path, cancer_type str)
+        output_path: Base output directory (Path)
+        compress: Whether to gzip the output
+
+    Returns:
+        tuple: ("success", image_name, feature_count) |
+               ("skipped", image_name) | ("empty", image_name) |
+               ("error", image_name, message)
+    """
+    svs_dir, cancer_type = slide_and_type
+    image_name = svs_dir.name
+    output_file = output_path / slide_output_filename(
+        cancer_type, image_name, compress
+    )
+
+    if output_file.exists():
+        return ("skipped", image_name)
+
+    csv_files = sorted(svs_dir.glob("*-features.csv"))
+    if not csv_files:
+        return ("empty", image_name)
+
+    try:
+        feature_count = write_slide_ttl(
+            csv_files, output_file, image_name, cancer_type, compress
+        )
+        return ("success", image_name, feature_count)
+    except Exception as e:
+        # Clean up any partial temp file so the next run can retry cleanly.
+        tmp_file = output_file.with_name(output_file.name + ".tmp")
+        with suppress(OSError):
+            tmp_file.unlink()
+        return ("error", image_name, str(e))
+
+
+def iter_slide_directories(cancer_type_dir):
+    """
+    Yield (svs_dir, cancer_type) for every whole-slide image directory under a
+    single *_polygon cancer-type directory.
+
+    Directory structure:
+        coad_polygon/
+            TCGA-*.svs.tar.gz/
+                coad_polygon/
+                    TCGA-*.svs/        <-- yielded
+                        *-features.csv
+
+    Args:
+        cancer_type_dir: Path to a single *_polygon directory
+
+    Yields:
+        tuples (svs_dir Path, cancer_type str)
+    """
+    input_path = Path(cancer_type_dir)
+    if not input_path.is_dir():
+        return
+
+    cancer_type = input_path.name.replace("_polygon", "")
+
+    tar_gz_dirs = sorted(
+        d for d in input_path.iterdir()
+        if d.is_dir() and d.name.endswith(".svs.tar.gz")
+    )
+    for tar_gz_dir in tar_gz_dirs:
+        inner_polygon_dirs = sorted(
+            d for d in tar_gz_dir.iterdir()
+            if d.is_dir() and d.name.endswith("_polygon")
+        )
+        for inner_polygon_dir in inner_polygon_dirs:
+            svs_dirs = sorted(
+                d for d in inner_polygon_dir.iterdir()
+                if d.is_dir() and d.name.endswith(".svs")
+            )
+            for svs_dir in svs_dirs:
+                yield svs_dir, cancer_type
+
+
+def select_slides_from_start(slides, start_from_image):
+    """
+    Apply resume logic: drop slides before start_from_image.
+
+    Args:
+        slides: list of (svs_dir, cancer_type) tuples
+        start_from_image: image name to start at, or None for all
+
+    Returns:
+        tuple (selected_slides, found_start_image)
+    """
+    if start_from_image is None:
+        return slides, True
+
+    selected = []
+    found = False
+    for svs_dir, cancer_type in slides:
+        if not found:
+            if svs_dir.name == start_from_image:
+                found = True
+            else:
+                continue
+        selected.append((svs_dir, cancer_type))
+    return selected, found
+
+
+def process_cancer_type_per_slide(
+    cancer_type_dir, output_dir, compress=False, start_from_image=None, workers=None
+):
+    """
+    Process a single *_polygon directory into one TTL per whole-slide image.
+
+    Parallelizes across slides (each slide writes an independent output file).
+
+    Args:
+        cancer_type_dir: Path to a single *_polygon directory
+        output_dir: Directory for output TTL files (flat list, one per slide)
+        compress: If True, gzip compress the output files
+        start_from_image: If provided, skip images until this one is reached
+        workers: Number of parallel workers (default: cpu_count - 1)
+
+    Returns:
+        tuple: (success_count, error_count, skipped_count, found_start_image)
+    """
+    input_path = Path(cancer_type_dir)
+    output_path = Path(output_dir)
+
+    if not input_path.is_dir():
+        print(f"Error: directory not found: {cancer_type_dir}", flush=True)
+        return (0, 0, 0, start_from_image is None)
+
+    if workers is None:
+        workers = max(1, cpu_count() - 1)
+
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    cancer_type = input_path.name.replace("_polygon", "")
+    print(f"Processing cancer type: {input_path.name} (type: {cancer_type})")
+    print(f"Using {workers} parallel workers")
+
+    all_slides = list(iter_slide_directories(input_path))
+    if not all_slides:
+        print(f"No .svs image directories found in {input_path.name}")
+        return (0, 0, 0, start_from_image is None)
+
+    slides, found_start_image = select_slides_from_start(all_slides, start_from_image)
+    if start_from_image is not None and found_start_image:
+        print(f"  Starting from image: {start_from_image}")
+
+    print(f"Found {len(all_slides)} slides ({len(slides)} to process)")
+
+    success_count = 0
+    error_count = 0
+    skipped_count = 0
+
+    worker_func = partial(
+        process_single_slide, output_path=output_path, compress=compress
+    )
+
+    with Pool(processes=workers) as pool:
+        for result in pool.imap_unordered(worker_func, slides):
+            status = result[0]
+            image_name = result[1]
+            if status == "success":
+                success_count += 1
+                print(f"  Merged {image_name} ({result[2]:,} polygons)", flush=True)
+            elif status == "skipped":
+                skipped_count += 1
+                print(f"  Skipped {image_name} (output exists)", flush=True)
+            elif status == "empty":
+                skipped_count += 1
+                print(f"  Skipped {image_name} (no patch CSVs)", flush=True)
+            elif status == "error":
+                error_count += 1
+                error_msg = result[2] if len(result) > 2 else "Unknown error"
+                print(f"  Error on {image_name}: {error_msg}", flush=True)
+
+    return (success_count, error_count, skipped_count, found_start_image)
+
+
+def process_input_per_slide(
+    input_dir, output_dir, compress=False, start_from_image=None, workers=None
+):
+    """
+    Top-level per-slide driver.
+
+    Accepts either a single *_polygon cancer-type directory or a base directory
+    containing several of them, and produces one merged TTL per whole-slide image.
+
+    Args:
+        input_dir: A *_polygon directory, or a base dir containing many
+        output_dir: Directory for output TTL files
+        compress: If True, gzip compress the output files
+        start_from_image: If provided, skip images until this one is reached
+        workers: Number of parallel workers (default: cpu_count - 1)
+
+    Returns:
+        tuple: (total_success, total_error, total_skipped)
+    """
+    input_path = Path(input_dir)
+
+    if not input_path.is_dir():
+        print(f"Error: input directory not found: {input_dir}", flush=True)
+        return (0, 0, 0)
+
+    if input_path.name.endswith("_polygon"):
+        cancer_type_dirs = [input_path]
+    else:
+        cancer_type_dirs = sorted(
+            d for d in input_path.iterdir()
+            if d.is_dir() and d.name.endswith("_polygon")
+        )
+
+    if not cancer_type_dirs:
+        print(f"No *_polygon directories found in {input_dir}", flush=True)
+        return (0, 0, 0)
+
+    print(f"Found {len(cancer_type_dirs)} cancer type directory(ies) to process")
+
+    total_success = 0
+    total_error = 0
+    total_skipped = 0
+    found_start_image = start_from_image is None
+
+    for cancer_type_dir in cancer_type_dirs:
+        # Once the start image is found in an earlier dir, process the rest fully.
+        current_start = None if found_start_image else start_from_image
+
+        success, errors, skipped, found = process_cancer_type_per_slide(
+            cancer_type_dir, output_dir, compress, current_start, workers
+        )
+
+        if found:
+            found_start_image = True
+
+        total_success += success
+        total_error += errors
+        total_skipped += skipped
+
+    return (total_success, total_error, total_skipped)
