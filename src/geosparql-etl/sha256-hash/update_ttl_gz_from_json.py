@@ -3,7 +3,7 @@ Update .ttl.gz files with SHA256 hashes from JSON file.
 
 This script (Part 2):
 1. Reads slide_hashes.json with {slide: "name.svs", hash: "sha256-value"}
-2. For each .svs subfolder in ${NUCLEAR_OUTPUT_DIR}
+2. For each .svs subfolder in $NUCLEAR_OUTPUT_DIR
 3. Updates all .ttl.gz files in that folder with the correct SHA256 hash
 4. Updates urn:sha256: values by decompressing, modifying, and recompressing
 
@@ -18,6 +18,11 @@ import json
 import re
 from multiprocessing import Pool, cpu_count
 from pathlib import Path
+
+import os
+from dotenv import find_dotenv, load_dotenv
+
+load_dotenv(find_dotenv())
 from typing import Dict, List, Tuple
 
 
@@ -166,7 +171,7 @@ def main():
 
     # Paths
     json_path = Path("slide_hashes.json")
-    base_dir = Path("${NUCLEAR_OUTPUT_DIR}")
+    base_dir = Path(os.environ["NUCLEAR_OUTPUT_DIR"])
 
     # Check if JSON file exists
     if not json_path.exists():

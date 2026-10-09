@@ -28,20 +28,20 @@ Output is a flat list, one file per image:
 
 
 # Process one cancer type directory
-python slide_segmentation_etl.py -i ${CVPR_DATA_DIR}/coad_polygon
+python slide_segmentation_etl.py -i $CVPR_DATA_DIR/coad_polygon
 
 # Process every cancer type under a base directory
-python slide_segmentation_etl.py -i ${CVPR_DATA_DIR}
+python slide_segmentation_etl.py -i $CVPR_DATA_DIR
 
 # Crank off just a few to eyeball, uncompressed, then stop
 python slide_segmentation_etl.py -i .../coad_polygon -o ./coad_slides --no-compress --workers 8
 
 
 # One cancer type
-python slide_segmentation_etl.py -i ${DATA_DIR}/.../coad_polygon -o ./coad_slides
+python slide_segmentation_etl.py -i $CVPR_DATA_DIR/coad_polygon -o ./coad_slides
 
 # Crank off a few to eyeball, then Ctrl-C (to spot-check first)
-python slide_segmentation_etl.py -i ${DATA_DIR}/.../coad_polygon -o ./coad_slides --no-compress
+python slide_segmentation_etl.py -i $CVPR_DATA_DIR/coad_polygon -o ./coad_slides --no-compress
 """
 
 import argparse

@@ -1,7 +1,8 @@
 #!/bin/bash
 # Script to remove loinc prefix line from .ttl.gz files in parallel (using xargs)
 
-DATA_DIR="${MONGO_TTL_DIR}"
+set -a; source "$(dirname "$0")/../../../.env"; set +a
+DATA_DIR="${MONGO_TTL_DIR:?set MONGO_TTL_DIR in .env}"
 PREFIX_TO_REMOVE="@prefix loinc: <http://loinc.org/rdf/> ."
 NUM_CORES=20
 
@@ -43,5 +44,5 @@ find "${DATA_DIR}" -name "*.ttl.gz" -type f -print0 | \
 echo ""
 echo "Processing complete!"
 
-# find ${MONGO_TTL_DIR} -name "*.ttl.gz.tmp" -type f 2>/dev/null | head -20
-# find ${MONGO_TTL_DIR} -name "*.ttl.gz.tmp" -type f -delete
+# find "$MONGO_TTL_DIR" -name "*.ttl.gz.tmp" -type f 2>/dev/null | head -20
+# find "$MONGO_TTL_DIR" -name "*.ttl.gz.tmp" -type f -delete

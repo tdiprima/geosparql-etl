@@ -16,6 +16,15 @@ from functools import partial
 from multiprocessing import Pool, cpu_count
 from pathlib import Path
 
+import os
+from dotenv import find_dotenv, load_dotenv
+
+load_dotenv(find_dotenv())
+
+CREATOR_ORCID = os.getenv("CREATOR_ORCID", "http://orcid.org/0000-0000-0000-0000")
+PUBLISHER_RORS = " , ".join(f"<{r.strip()}>" for r in os.getenv("PUBLISHER_RORS", "https://ror.org/00000000a").split(",") if r.strip())
+DATASET_DOI = os.getenv("DATASET_DOI", "https://doi.org/10.0000/example")
+
 # SNOMED URI for nuclear material (nucleoplasm)
 # Using SNOMED code for nuclear material/nucleoplasm
 NUCLEAR_MATERIAL_SNOMED = "http://snomed.info/id/68841002"  # Nucleoplasm
@@ -222,7 +231,7 @@ def render_feature_collection_ttl(
     )
 
     # TTL header with prefixes
-    ttl = """@prefix dc:   <http://purl.org/dc/terms/> .
+    ttl = f"""@prefix dc:   <http://purl.org/dc/terms/> .
 @prefix exif: <http://www.w3.org/2003/12/exif/ns#> .
 @prefix geo:  <http://www.opengis.net/ont/geosparql#> .
 @prefix hal:  <https://halcyon.is/ns/> .
@@ -243,11 +252,11 @@ def render_feature_collection_ttl(
 
     # Feature collection header
     ttl += f"""<>      a                    geo:FeatureCollection;
-        dc:creator           "${CREATOR_ORCID}";
+        dc:creator           "{CREATOR_ORCID}";
         dc:date              "{timestamp}"^^xsd:dateTime;
         dc:description       "Nuclear segmentation predictions for {image_name} - {patch_desc}";
-        dc:publisher         <${PUBLISHER_ROR_1}> , <${PUBLISHER_ROR_2}>;
-        dc:references        "${DATASET_DOI}";
+        dc:publisher         {PUBLISHER_RORS};
+        dc:references        "{DATASET_DOI}";
         dc:title             "nuclear-segmentation-predictions";"""
 
     if cancer_type:
@@ -570,11 +579,11 @@ def render_slide_ttl_header(
         exif:height  "{slide_height}"^^xsd:int .
 
 <>      a                    geo:FeatureCollection;
-        dc:creator           "${CREATOR_ORCID}";
+        dc:creator           "{CREATOR_ORCID}";
         dc:date              "{timestamp}"^^xsd:dateTime;
         dc:description       "Nuclear segmentation predictions for {image_name} - merged from {patch_count} patches";
-        dc:publisher         <${PUBLISHER_ROR_1}> , <${PUBLISHER_ROR_2}>;
-        dc:references        "${DATASET_DOI}";
+        dc:publisher         {PUBLISHER_RORS};
+        dc:references        "{DATASET_DOI}";
         dc:title             "nuclear-segmentation-predictions";"""
 
     if cancer_type:

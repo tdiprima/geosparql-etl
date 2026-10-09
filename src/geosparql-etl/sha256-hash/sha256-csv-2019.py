@@ -3,12 +3,17 @@
 Generate a shell script to compute SHA256 hashes for SVS files.
 
 This script (Part 1):
-1. Scans ${CVPR_DATA_DIR} for subfolders ending in _polygon
+1. Scans $CVPR_DATA_DIR for subfolders ending in _polygon
 2. Extracts the prefix from .svs.tar.gz filenames in each subfolder
 3. Generates a shell script that will compute SHA256 for each SVS file
 4. The generated script outputs to a JSON file: {"slide": "name.svs", "hash": "sha256"}
 """
 from pathlib import Path
+
+import os
+from dotenv import find_dotenv, load_dotenv
+
+load_dotenv(find_dotenv())
 
 
 def extract_svs_filename(tar_gz_file: Path) -> str:
@@ -49,7 +54,7 @@ def extract_prefix_from_folder(folder_name: str) -> str:
 
 def generate_script():
     """Generate the SHA256 computation shell script."""
-    base_dir = Path("${CVPR_DATA_DIR}")
+    base_dir = Path(os.environ["CVPR_DATA_DIR"])
 
     if not base_dir.exists():
         print(f"Error: Directory not found: {base_dir}")
@@ -113,7 +118,7 @@ def generate_script():
         for info in svs_file_info:
             svs_filename = info["svs_filename"]
             prefix = info["prefix"]
-            svs_path = f"${TCGA_IMAGE_DIR}/{prefix}/{svs_filename}"
+            svs_path = f"{os.environ['TCGA_IMAGE_DIR']}/{prefix}/{svs_filename}"
 
             f.write(f"# Process {svs_filename} from {info['polygon_folder']}\n")
             f.write(f'if [ -f "{svs_path}" ]; then\n')

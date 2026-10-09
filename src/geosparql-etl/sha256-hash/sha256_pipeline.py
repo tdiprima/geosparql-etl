@@ -18,7 +18,7 @@ load_dotenv()
 # Suppress InsecureRequestWarning when using verify=False
 requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
 
-DRUPAL_BASE = "https://example.com/node"
+DRUPAL_BASE = os.getenv("DRUPAL_BASE", "https://example.com/node")
 
 
 def get_auth():

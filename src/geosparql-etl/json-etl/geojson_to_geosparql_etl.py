@@ -9,6 +9,15 @@ from datetime import datetime, timezone
 from multiprocessing import Pool
 from pathlib import Path
 
+import os
+from dotenv import find_dotenv, load_dotenv
+
+load_dotenv(find_dotenv())
+
+CREATOR_ORCID = os.getenv("CREATOR_ORCID", "http://orcid.org/0000-0000-0000-0000")
+PUBLISHER_RORS = " , ".join(f"<{r.strip()}>" for r in os.getenv("PUBLISHER_RORS", "https://ror.org/00000000a").split(",") if r.strip())
+DATASET_DOI = os.getenv("DATASET_DOI", "https://doi.org/10.0000/example")
+
 # SNOMED URI mappings for tissue classes
 SNOMED_MAPPINGS = {
     "400p-Acinar tissue": "http://snomed.info/id/73681006",
@@ -107,7 +116,7 @@ def create_geosparql_ttl(geojson_data, filename, output_dir):
     # Start feature collection with <> as the subject (self-reference)
     ttl_content += (
         """<>      a                    geo:FeatureCollection;
-        dc:creator           "${CREATOR_ORCID}";
+        dc:creator           """" + CREATOR_ORCID + """";
         dc:date              \""""
         + timestamp
         + """\"^^xsd:dateTime;
@@ -253,8 +262,8 @@ def main():
     """Main entry point for the ETL script."""
 
     # Configuration
-    INPUT_DIR = "${GEOJSON_INPUT_DIR}"  # Directory containing your 471 GeoJSON files
-    OUTPUT_DIR = "${GEOJSON_OUTPUT_DIR}"  # Directory for output TTL files
+    INPUT_DIR = os.environ["GEOJSON_INPUT_DIR"]  # Directory containing the GeoJSON files
+    OUTPUT_DIR = os.environ["GEOJSON_OUTPUT_DIR"]  # Directory for output TTL files
 
     print("GeoJSON to GeoSPARQL ETL Converter")
     print("===================================")

@@ -9,8 +9,9 @@ echo "Starting index builds..." | tee -a "$LOGFILE"
 echo "Log: $LOGFILE"
 
 # --- CONFIG ---
-MONGO_HOST="localhost:27017"
-DB_NAME="mydb"
+set -a; source "$(dirname "$0")/../../../.env"; set +a
+MONGO_HOST="${MONGO_INDEX_HOST:-localhost:27017}"
+DB_NAME="${MONGO_DB_NAME:-mydb}"
 
 # --- INDEX COMMANDS ---
 echo "Creating mark.provenance.image.imageid index..." | tee -a "$LOGFILE"

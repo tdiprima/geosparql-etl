@@ -5,11 +5,11 @@ for a single cancer type directory (e.g., coad_polygon).
 Processes one *_polygon directory instead of scanning the entire base directory.
 
 # Process coad_polygon with defaults
-python single_cancer_etl.py -i ${CVPR_DATA_DIR}/coad_polygon
+python single_cancer_etl.py -i $CVPR_DATA_DIR/coad_polygon
 
 # With all options
 python single_cancer_etl.py \
-    -i ${CVPR_DATA_DIR}/coad_polygon \
+    -i $CVPR_DATA_DIR/coad_polygon \
     -o ./coad_output \
     --workers 16 \
     --start-from "TCGA-A6-2671-01Z-00-DX1.8DC29822-6738-4C25-94E0-B97412E3A22D.svs"
@@ -43,7 +43,7 @@ def main():
         "-i",
         "--input",
         required=True,
-        help="Path to a single cancer type directory (e.g., ${CVPR_DATA_DIR}/coad_polygon)",
+        help="Path to a single cancer type directory (e.g., $CVPR_DATA_DIR/coad_polygon)",
     )
 
     parser.add_argument(

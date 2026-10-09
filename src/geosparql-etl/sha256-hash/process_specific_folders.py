@@ -12,6 +12,11 @@ import re
 import sys
 from multiprocessing import Pool, cpu_count
 from pathlib import Path
+
+import os
+from dotenv import find_dotenv, load_dotenv
+
+load_dotenv(find_dotenv())
 from typing import Dict, Tuple
 
 
@@ -120,7 +125,7 @@ def main():
 
     # Paths
     json_path = Path("slide_hashes.json")
-    base_dir = Path("${NUCLEAR_OUTPUT_DIR}")
+    base_dir = Path(os.environ["NUCLEAR_OUTPUT_DIR"])
 
     # Check if JSON file exists
     if not json_path.exists():

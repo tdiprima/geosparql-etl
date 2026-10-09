@@ -3,7 +3,7 @@
 Update TTL files with SHA256 hashes from corresponding SVS files.
 
 This script:
-1. Reads TTL filenames from ${WSINFER_TTL_DIR}
+1. Reads TTL filenames from $WSINFER_TTL_DIR
 2. For each TTL file, computes SHA256 of the corresponding SVS file
 3. Updates the TTL file:
    - Updates the hash value in existing urn:sha256: URNs with the computed SHA256
@@ -12,6 +12,11 @@ This script:
 import hashlib
 import re
 from pathlib import Path
+
+import os
+from dotenv import find_dotenv, load_dotenv
+
+load_dotenv(find_dotenv())
 from typing import Optional
 
 
@@ -77,8 +82,8 @@ def update_ttl_file(ttl_path: Path, sha256_hash: Optional[str]) -> None:
 def main():
     """Main processing function."""
     # Define paths
-    ttl_dir = Path.home() / "tammy" / "test_wsinfer" / "results" / "geosparql_output"
-    svs_base_dir = Path("${TCGA_IMAGE_DIR}/paad")
+    ttl_dir = Path(os.environ["WSINFER_TTL_DIR"]).expanduser()
+    svs_base_dir = Path(os.environ["TCGA_IMAGE_DIR"]) / "paad"
 
     if not ttl_dir.exists():
         print(f"Error: TTL directory not found: {ttl_dir}")

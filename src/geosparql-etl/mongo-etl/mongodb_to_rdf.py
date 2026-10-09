@@ -21,8 +21,11 @@ from pathlib import Path
 # Add parent directory to path to import utils
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from dotenv import find_dotenv, load_dotenv
 from sha256_pipeline import get_auth, get_real_hash_from_node
 from utils import mongo_connection
+
+load_dotenv(find_dotenv())
 
 # =====================
 # 📧 CONFIG - OPTIMIZED FOR PARALLEL PROCESSING
@@ -36,13 +39,9 @@ LOG_MAX_BYTES = 50 * 1024 * 1024  # 50MB log files
 LOG_BACKUP_COUNT = 10
 GZIP_COMPRESSION_LEVEL = 6  # 1=fastest, 9=best compression
 
-# MongoDB connection settings
-# IMPORTANT: Update these based on where you run the script!
-# MONGO_HOST = "localhost"  # Change to "${MONGO_HOST}" if running on server
-# MONGO_PORT = 27018  # Change to 27017 if connecting directly
-MONGO_HOST = "${MONGO_HOST}"
-MONGO_PORT = 27017
-MONGO_DB = "mydb"
+# MongoDB connection settings (from .env)
+MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017/")
+MONGO_DB = os.getenv("MONGO_DB_NAME", "mydb")
 
 # Create directories
 OUTPUT_DIR.mkdir(exist_ok=True)
@@ -496,7 +495,7 @@ def process_analysis_worker(args):
             # Continue anyway - the important part is processing the data
 
         # Create MongoDB connection (each worker gets its own)
-        with mongo_connection(f"mongodb://{MONGO_HOST}:{MONGO_PORT}/", MONGO_DB) as db:
+        with mongo_connection(MONGO_URI, MONGO_DB) as db:
 
             # Query for marks that belong to this analysis
             query = {
@@ -683,7 +682,7 @@ def main():
     )
 
     # Get list of analyses to process
-    with mongo_connection(f"mongodb://{MONGO_HOST}:{MONGO_PORT}/", MONGO_DB) as db:
+    with mongo_connection(MONGO_URI, MONGO_DB) as db:
         total_analyses = db.analysis.count_documents({})
         main_logger.info(f"Found {total_analyses:,} total analyses in database")
 

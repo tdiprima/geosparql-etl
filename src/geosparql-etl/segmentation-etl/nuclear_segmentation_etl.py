@@ -23,6 +23,7 @@ python nuclear_segmentation_etl.py --help
 """
 
 import argparse
+import os
 from multiprocessing import cpu_count
 from pathlib import Path
 
@@ -32,6 +33,10 @@ try:
     rich_argparse.RichHelpFormatter.styles["argparse.groups"] = "bold yellow"
 except ImportError:
     rich_argparse = None
+
+from dotenv import find_dotenv, load_dotenv
+
+load_dotenv(find_dotenv())
 
 from etl_core import process_cancer_type_directory
 
@@ -115,7 +120,7 @@ def main():
     parser.add_argument(
         "-i",
         "--input",
-        default="${CVPR_DATA_DIR}",
+        default=os.getenv("CVPR_DATA_DIR", "/path/to/cvpr-data"),
         help="Input base directory containing cancer type folders (*_polygon)",
     )
 
