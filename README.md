@@ -67,7 +67,7 @@ Defaults:
 * Everything uses deterministic SHA-256 hashes
 * SNOMED + GeoSPARQL prefixes are all in the script headers
 
-## 🧑‍💻 License
+## 👩‍💻 License
 
 MIT — check [LICENSE](LICENSE) for the boring part.
 
