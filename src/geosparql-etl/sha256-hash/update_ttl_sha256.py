@@ -4,7 +4,8 @@ Replace <urn:sha256:...> in TTL files with the real SHA256 of the image file.
 
 Walks TTL_DIR for .ttl and .ttl.gz files, reads the image name from
 dc:identifier "<name>", finds that file anywhere under IMAGE_DIR, hashes its
-contents, and rewrites the hash in the TTL file.
+contents, and rewrites the hash in the TTL file. If the image is not found,
+tags the ImageObject with "hal:missing true" instead.
 
 Runs on Python 2.7 and Python 3 (standard library only).
 
@@ -25,6 +26,9 @@ import sys
 
 IDENTIFIER_RE = re.compile(br'dc:identifier\s+"([^"]+)"')
 HASH_RE = re.compile(br"<urn:sha256:[0-9a-fA-F]+>")
+IMAGE_OBJECT_RE = re.compile(br"(<urn:sha256:[0-9a-fA-F]+>\s+a\s+so:ImageObject\s*;)")
+MISSING_RE = re.compile(br"\n[ \t]*hal:missing\s+true\s*;")
+HAL_PREFIX = b"@prefix hal:  <https://halcyon.is/ns/> .\n"
 
 
 def index_images(image_dir):
@@ -46,11 +50,23 @@ def sha256_of(path):
 
 def new_content(content, sha256_hash):
     """Return content with every <urn:sha256:...> set to sha256_hash."""
+    # Image exists now, so drop any hal:missing tag left by an earlier run.
+    content = MISSING_RE.sub(b"", content)
     return HASH_RE.sub(b"<urn:sha256:" + sha256_hash.encode("ascii") + b">", content)
 
 
+def mark_missing(content):
+    """Return content with 'hal:missing true' on the ImageObject (same wording as sha256-json-paad.py)."""
+    if MISSING_RE.search(content):
+        return content
+    content = IMAGE_OBJECT_RE.sub(br"\1\n        hal:missing      true;", content, count=1)
+    if MISSING_RE.search(content) and b"@prefix hal:" not in content:
+        content = HAL_PREFIX + content
+    return content
+
+
 def process(ttl_path, images, hashes, dry_run, backup=False):
-    """Return 'updated', 'unchanged', or a 'skipped: ...' reason."""
+    """Return 'updated', 'unchanged', 'missing: ...', or a 'skipped: ...' reason."""
     opener = gzip.open if ttl_path.endswith(".gz") else open
     # shortcut: whole file in memory, switch to streaming if TTL files exceed RAM
     with opener(ttl_path, "rb") as f:
@@ -63,13 +79,17 @@ def process(ttl_path, images, hashes, dry_run, backup=False):
     if not HASH_RE.search(content):
         return "skipped: no urn:sha256"
     if name not in images:
-        return "skipped: image not found: " + name
-
-    if name not in hashes:
-        hashes[name] = sha256_of(images[name])
-    updated = new_content(content, hashes[name])
+        updated = mark_missing(content)
+        if not MISSING_RE.search(updated):
+            return "skipped: image not found, no ImageObject to tag: " + name
+        result = "missing: image not found, tagged hal:missing: " + name
+    else:
+        if name not in hashes:
+            hashes[name] = sha256_of(images[name])
+        updated = new_content(content, hashes[name])
+        result = "updated"
     if updated == content:
-        return "unchanged"
+        return result if result != "updated" else "unchanged"
 
     if not dry_run:
         # Write a temp file then rename, so a crash never leaves a half-written TTL.
@@ -80,7 +100,7 @@ def process(ttl_path, images, hashes, dry_run, backup=False):
         if backup and not os.path.exists(ttl_path + ".bak"):
             shutil.copy2(ttl_path, ttl_path + ".bak")
         os.rename(tmp_path, ttl_path)
-    return "updated"
+    return result
 
 
 def main():
@@ -113,7 +133,7 @@ def main():
                 result = "skipped: " + str(e)
             key = result.split(":")[0]
             counts[key] = counts.get(key, 0) + 1
-            if key == "skipped":
+            if key in ("skipped", "missing"):
                 print(path + ": " + result, file=sys.stderr)
 
     for key in sorted(counts):
@@ -126,6 +146,10 @@ def self_test():
     old = b'dc:identifier "a.svs";\n<urn:sha256:' + b"0" * 64 + b"> x"
     assert IDENTIFIER_RE.search(old).group(1) == b"a.svs"
     assert new_content(old, "ab" * 32).endswith(b"<urn:sha256:" + b"ab" * 32 + b"> x")
+    tagged = mark_missing(b"<urn:sha256:" + b"0" * 64 + b">\n        a            so:ImageObject;\n x")
+    assert tagged.startswith(HAL_PREFIX) and b"so:ImageObject;\n        hal:missing      true;\n x" in tagged
+    assert mark_missing(tagged) == tagged
+    assert b"hal:missing" not in new_content(tagged, "ab" * 32)
     print("self test ok")
 
 
