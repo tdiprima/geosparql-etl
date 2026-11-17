@@ -13,6 +13,9 @@ Usage:
     python update_ttl_sha256.py TTL_DIR IMAGE_DIR --dry-run
     python update_ttl_sha256.py TTL_DIR IMAGE_DIR
     python update_ttl_sha256.py TTL_DIR IMAGE_DIR --backup   # keep <file>.bak
+    python update_ttl_sha256.py TTL_DIR IMAGE_DIR --workers 12
+
+Progress goes to stderr, the final counts to stdout.
 """
 from __future__ import print_function
 
@@ -23,6 +26,8 @@ import os
 import re
 import shutil
 import sys
+from multiprocessing import cpu_count
+from multiprocessing.pool import ThreadPool
 
 IDENTIFIER_RE = re.compile(br'dc:identifier\s+"([^"]+)"')
 HASH_RE = re.compile(br"<urn:sha256:[0-9a-fA-F]+>")
@@ -31,13 +36,40 @@ MISSING_RE = re.compile(br"\n[ \t]*hal:missing\s+true\s*;")
 HAL_PREFIX = b"@prefix hal:  <https://halcyon.is/ns/> .\n"
 
 
-def index_images(image_dir):
-    """Map file name -> full path for every file under image_dir."""
+def log(message):
+    print(message, file=sys.stderr)
+    sys.stderr.flush()
+
+
+def walk_files(top):
+    return [(name, os.path.join(root, name)) for root, _, names in os.walk(top) for name in names]
+
+
+def index_images(image_dir, pool):
+    """Map file name -> full path for every file under image_dir, one top-level folder per thread."""
     index = {}
-    for root, _, names in os.walk(image_dir):
-        for name in names:
-            index.setdefault(name, os.path.join(root, name))
+    subdirs = []
+    for name in sorted(os.listdir(image_dir)):
+        path = os.path.join(image_dir, name)
+        if not os.path.isdir(path):
+            index[name] = path
+        elif not os.path.islink(path):  # os.walk does not follow linked folders either
+            subdirs.append(path)
+    for found in pool.map(walk_files, subdirs):
+        for name, path in found:
+            index.setdefault(name, path)
     return index
+
+
+def image_name(ttl_path):
+    """Image name from the first 1 MB of a TTL file, or None. Cheap: no full read."""
+    opener = gzip.open if ttl_path.endswith(".gz") else open
+    try:
+        with opener(ttl_path, "rb") as f:
+            match = IDENTIFIER_RE.search(f.read(1 << 20))
+    except (IOError, OSError):
+        return None
+    return match.group(1).decode("utf-8") if match else None
 
 
 def sha256_of(path):
@@ -113,28 +145,57 @@ def main():
     parser.add_argument(
         "--backup", action="store_true", help="copy each file to <file>.bak before overwriting"
     )
+    parser.add_argument(
+        "--workers", type=int, default=cpu_count(), help="threads to use (default: all cores)"
+    )
     args = parser.parse_args()
 
     for d in (args.ttl_dir, args.image_dir):
         if not os.path.isdir(d):
             sys.exit("Error: not a directory: " + d)
 
-    images = index_images(args.image_dir)
-    hashes = {}
-    counts = {}
+    # Threads, not processes: file reads, sha256 and gzip all release the GIL.
+    pool = ThreadPool(max(1, args.workers))
+    images = index_images(args.image_dir, pool)
+    log("indexed %d image files" % len(images))
+
+    ttl_paths = []
     for root, _, names in os.walk(args.ttl_dir):
         for name in sorted(names):
-            if not name.endswith((".ttl", ".ttl.gz")):
-                continue
-            path = os.path.join(root, name)
-            try:
-                result = process(path, images, hashes, args.dry_run, args.backup)
-            except (IOError, OSError) as e:
-                result = "skipped: " + str(e)
-            key = result.split(":")[0]
-            counts[key] = counts.get(key, 0) + 1
-            if key in ("skipped", "missing"):
-                print(path + ": " + result, file=sys.stderr)
+            if name.endswith((".ttl", ".ttl.gz")):
+                ttl_paths.append(os.path.join(root, name))
+    log("found %d TTL files" % len(ttl_paths))
+
+    # Hash each needed image once, up front, so TTL files sharing an image never hash it twice.
+    todo = sorted(n for n in set(pool.imap_unordered(image_name, ttl_paths)) if n in images)
+    log("hashing %d images" % len(todo))
+
+    def hash_one(name):
+        try:
+            return name, sha256_of(images[name])
+        except (IOError, OSError):
+            return name, None  # process() retries and reports the error
+
+    hashes = {}
+    for done, (name, digest) in enumerate(pool.imap_unordered(hash_one, todo), 1):
+        if digest:
+            hashes[name] = digest
+        log("hashed %d/%d: %s" % (done, len(todo), name))
+
+    def run_one(path):
+        try:
+            return path, process(path, images, hashes, args.dry_run, args.backup)
+        except (IOError, OSError) as e:
+            return path, "skipped: " + str(e)
+
+    counts = {}
+    for done, (path, result) in enumerate(pool.imap(run_one, ttl_paths), 1):
+        key = result.split(":")[0]
+        counts[key] = counts.get(key, 0) + 1
+        if key in ("skipped", "missing"):
+            log(path + ": " + result)
+        if done % 100 == 0:
+            log("processed %d/%d TTL files" % (done, len(ttl_paths)))
 
     for key in sorted(counts):
         print("%s: %d" % (key, counts[key]))
